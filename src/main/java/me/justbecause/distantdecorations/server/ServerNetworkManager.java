@@ -31,13 +31,15 @@ public final class ServerNetworkManager {
     public static final int MAX_RECORDS_PER_SNAPSHOT_PART = 400;
     public static final int MAX_BYTES_PER_SNAPSHOT_PART = 32768; // 32 KiB target part size
     public static final int DEFAULT_MAX_BYTES_PER_TICK = 131072; // 128 KiB per tick per player
-    public static final int MAX_REGIONS_MATERIALIZED_PER_TICK = 2; // CPU / I/O progressive construction budget
+    public static final int MAX_REGIONS_MATERIALIZED_PER_TICK = 2; // Progressive construction budget (regions)
+    public static final int MAX_RECORDS_MATERIALIZED_PER_TICK = 2000; // Progressive construction budget (records)
 
     private static final class PlayerSubscription {
         final ServerPlayer player;
         int centerChunkX;
         int centerChunkZ;
         int radiusChunks = 64;
+        boolean helloAccepted = false;
         Set<Identifier> supportedTypes = null;
 
         final Set<Long> desiredRegions = ConcurrentHashMap.newKeySet();
@@ -72,15 +74,28 @@ public final class ServerNetworkManager {
     }
 
     public void handleClientHello(ServerPlayer player, C2SClientHello hello) {
+        if (hello.protocolVersion() != PROTOCOL_VERSION) {
+            me.justbecause.distantdecorations.DistantDecorations.LOGGER.warn(
+                "Rejecting client {} with incompatible Distant Decorations protocol version: {} (expected {})",
+                player.getName().getString(), hello.protocolVersion(), PROTOCOL_VERSION
+            );
+            return;
+        }
+
         PlayerSubscription sub = subscriptions.computeIfAbsent(player.getUUID(), k -> new PlayerSubscription(player));
-        sub.supportedTypes = hello.supportedTypes() != null ? new HashSet<>(hello.supportedTypes()) : null;
+        sub.helloAccepted = true;
+        sub.supportedTypes = hello.supportedTypes() != null ? new HashSet<>(hello.supportedTypes()) : Collections.emptySet();
         int requested = hello.requestedRadiusChunks();
         sub.radiusChunks = Math.max(MIN_RADIUS_CHUNKS, Math.min(requested, ABSOLUTE_MAX_RADIUS_CHUNKS));
         updateSubscriptions(player, player.getBlockX() >> 4, player.getBlockZ() >> 4, sub.radiusChunks);
     }
 
     public void handleSubscriptionUpdate(ServerPlayer player, C2SSubscriptionUpdate update) {
-        PlayerSubscription sub = subscriptions.computeIfAbsent(player.getUUID(), k -> new PlayerSubscription(player));
+        PlayerSubscription sub = subscriptions.get(player.getUUID());
+        if (sub == null || !sub.helloAccepted) {
+            return;
+        }
+
         int requested = update.requestedRadiusChunks();
         sub.radiusChunks = Math.max(MIN_RADIUS_CHUNKS, Math.min(requested, ABSOLUTE_MAX_RADIUS_CHUNKS));
         // Server is strictly authoritative for player location
@@ -91,7 +106,7 @@ public final class ServerNetworkManager {
 
     public void updateSubscriptions(ServerPlayer player, int centerChunkX, int centerChunkZ, int radiusChunks) {
         PlayerSubscription sub = subscriptions.get(player.getUUID());
-        if (sub == null) {
+        if (sub == null || !sub.helloAccepted) {
             return;
         }
 
@@ -160,7 +175,7 @@ public final class ServerNetworkManager {
 
         Set<Long> allActiveRegionsInLevel = new HashSet<>();
         for (PlayerSubscription sub : subscriptions.values()) {
-            if (sub.player.level() == level) {
+            if (sub.player.level() == level && sub.helloAccepted) {
                 allActiveRegionsInLevel.addAll(sub.desiredRegions);
             }
         }
@@ -170,13 +185,14 @@ public final class ServerNetworkManager {
 
         // Process progressive snapshot materialization and byte-budgeted streaming
         for (PlayerSubscription sub : subscriptions.values()) {
-            if (sub.player.level() != level || !sub.player.isAlive()) {
+            if (sub.player.level() != level || !sub.player.isAlive() || !sub.helloAccepted) {
                 continue;
             }
 
-            // A. Progressive snapshot construction (bounded CPU/disk budget)
-            int materializedCount = 0;
-            while (materializedCount < MAX_REGIONS_MATERIALIZED_PER_TICK && !sub.pendingRegionJobs.isEmpty() && sub.pendingPackets.size() < 16) {
+            // A. Progressive snapshot construction (bounded CPU/disk/record budget)
+            int materializedRegions = 0;
+            int materializedRecords = 0;
+            while (materializedRegions < MAX_REGIONS_MATERIALIZED_PER_TICK && materializedRecords < MAX_RECORDS_MATERIALIZED_PER_TICK && !sub.pendingRegionJobs.isEmpty() && sub.pendingPackets.size() < 16) {
                 Long nextKey;
                 synchronized (sub.pendingRegionJobs) {
                     nextKey = sub.pendingRegionJobs.isEmpty() ? null : sub.pendingRegionJobs.remove(0);
@@ -197,6 +213,9 @@ public final class ServerNetworkManager {
                 Collection<DecorationRecord> allRecords = region.getAllRecords();
                 List<DecorationRecord> filteredRecords = new ArrayList<>();
                 for (DecorationRecord rec : allRecords) {
+                    if (rec.payload() != null && rec.payload().length > ServerDecorationWorldIndex.MAX_PAYLOAD_BYTES) {
+                        continue; // skip oversized provider payloads
+                    }
                     if (sub.supportedTypes == null || sub.supportedTypes.contains(rec.id().type())) {
                         filteredRecords.add(rec);
                     }
@@ -204,7 +223,8 @@ public final class ServerNetworkManager {
 
                 List<S2CRegionSnapshot> parts = chunkSnapshot(rx, rz, region.revision(), filteredRecords);
                 sub.pendingPackets.addAll(parts);
-                materializedCount++;
+                materializedRegions++;
+                materializedRecords += filteredRecords.size();
             }
 
             // B. Byte-budgeted packet transmission
@@ -293,12 +313,15 @@ public final class ServerNetworkManager {
         long regionKey = ServerDecorationWorldIndex.packRegionKey(regionX, regionZ);
 
         for (PlayerSubscription sub : subscriptions.values()) {
-            if (sub.player.level().dimension() != dim || !sub.desiredRegions.contains(regionKey)) {
+            if (sub.player.level().dimension() != dim || !sub.helloAccepted || !sub.desiredRegions.contains(regionKey)) {
                 continue;
             }
 
             List<DecorationRecord> filteredAdditions = new ArrayList<>();
             for (DecorationRecord add : additions) {
+                if (add.payload() != null && add.payload().length > ServerDecorationWorldIndex.MAX_PAYLOAD_BYTES) {
+                    continue;
+                }
                 if (sub.supportedTypes == null || sub.supportedTypes.contains(add.id().type())) {
                     filteredAdditions.add(add);
                 }

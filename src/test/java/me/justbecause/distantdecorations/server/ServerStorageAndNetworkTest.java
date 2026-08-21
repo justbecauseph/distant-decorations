@@ -23,6 +23,10 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -157,15 +161,51 @@ public class ServerStorageAndNetworkTest {
     }
 
     @Test
-    public void testMaintenanceIntervalDoesNotFlushEveryTick() {
-        ServerDecorationRegion r1 = new ServerDecorationRegion(0, 0);
-        r1.markDirty();
-        assertTrue(r1.isDirty());
+    public void testMaintenanceIntervalDoesNotFlushEveryTick() throws Exception {
+        Path tempDir = Files.createTempDirectory("dd_test_maintenance");
+        try {
+            ServerDecorationWorldIndex index = new ServerDecorationWorldIndex(null, tempDir);
+            ServerDecorationRegion r = index.getOrCreateRegion(0, 0);
 
-        // Call index.tick() 99 times -> maintenance ticks do not expire -> no flush
-        // At tick 100 -> maintenance ticks expire -> periodic flush occurs
-        int maintenanceInterval = ServerDecorationWorldIndex.MAINTENANCE_INTERVAL_TICKS;
-        assertEquals(100, maintenanceInterval);
+            Identifier type = Identifier.fromNamespaceAndPath("test", "painting");
+            ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("minecraft", "overworld"));
+            DecorationRecord rec = new DecorationRecord(
+                new DecorationId(type, dim, new BlockPos(10, 64, 10)),
+                new AABB(10, 64, 10, 11, 65, 10.1),
+                1L,
+                new byte[]{1, 2}
+            );
+            r.addOrUpdate(rec);
+            assertTrue(r.isDirty(), "Region must be dirty after record insertion");
+
+            Path regionFile = tempDir.resolve("r.0.0.dat");
+            assertFalse(Files.exists(regionFile), "Region file must not exist before flush");
+
+            // Ticks 1 to 99: Periodic maintenance must NOT run
+            for (int t = 1; t <= 99; t++) {
+                index.tick(Collections.emptySet());
+                assertTrue(r.isDirty(), "Region must remain dirty on tick " + t);
+                assertFalse(Files.exists(regionFile), "File must not be written on tick " + t);
+            }
+
+            // Tick 100: Maintenance interval fires, dirty region is flushed to disk!
+            index.tick(Collections.emptySet());
+            assertFalse(r.isDirty(), "Region must be clean after tick 100 flush");
+            assertTrue(Files.exists(regionFile), "Region file must now exist on disk");
+
+            // Verify disk content round-trip
+            ServerDecorationWorldIndex reloadedIndex = new ServerDecorationWorldIndex(null, tempDir);
+            ServerDecorationRegion reloadedRegion = reloadedIndex.getOrCreateRegion(0, 0);
+            assertEquals(1, reloadedRegion.size());
+            assertEquals(1, reloadedIndex.getTotalIndexedDecorations());
+        } finally {
+            // Clean up temp directory
+            try (var paths = Files.walk(tempDir)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(p -> {
+                    try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+                });
+            }
+        }
     }
 }
 

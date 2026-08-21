@@ -78,11 +78,11 @@ public final class ClientNetworkManager {
         });
 
         net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents.CHUNK_LOAD.register((world, chunk) -> {
-            me.justbecause.distantdecorations.client.render.LiveHandoffTracker.getInstance().onChunkLoaded(chunk.getPos().x(), chunk.getPos().z());
+            DecorationRenderManager.getInstance().getHandoffTracker().onChunkLoaded(chunk.getPos().x(), chunk.getPos().z());
         });
 
         net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents.CHUNK_UNLOAD.register((world, chunk) -> {
-            me.justbecause.distantdecorations.client.render.LiveHandoffTracker.getInstance().onChunkUnloaded(chunk.getPos().x(), chunk.getPos().z());
+            DecorationRenderManager.getInstance().getHandoffTracker().onChunkUnloaded(chunk.getPos().x(), chunk.getPos().z());
         });
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {

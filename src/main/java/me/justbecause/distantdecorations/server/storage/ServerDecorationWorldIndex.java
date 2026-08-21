@@ -21,6 +21,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class ServerDecorationWorldIndex {
     public static final int CHUNKS_PER_REGION_AXIS = 32;
@@ -49,6 +50,9 @@ public final class ServerDecorationWorldIndex {
         return chunkCoord >> 5; // divide by 32
     }
 
+    public static final int MAX_PAYLOAD_BYTES = 16384; // 16 KiB
+    private final AtomicLong indexedDecorationCount = new AtomicLong(0);
+
     public ServerLevel getLevel() {
         return level;
     }
@@ -58,7 +62,8 @@ public final class ServerDecorationWorldIndex {
             ServerDecorationRegion loaded = loadRegionFromFile(regionX, regionZ);
             if (loaded != null) {
                 TelemetryMetrics.SERVER_REGIONS.incrementAndGet();
-                TelemetryMetrics.SERVER_INDEXED_DECORATIONS.addAndGet(loaded.size());
+                indexedDecorationCount.addAndGet(loaded.size());
+                TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(indexedDecorationCount.get());
                 return loaded;
             }
             ServerDecorationRegion newRegion = new ServerDecorationRegion(regionX, regionZ);
@@ -103,6 +108,11 @@ public final class ServerDecorationWorldIndex {
         AABB bounds = provider.calculateBounds(level, pos, data);
         byte[] payload = provider.type().toBytes(data);
 
+        if (payload != null && payload.length > MAX_PAYLOAD_BYTES) {
+            DistantDecorations.LOGGER.warn("Rejected oversized decoration payload ({} bytes > {} max) for type {} at {}", payload.length, MAX_PAYLOAD_BYTES, provider.type().id(), pos);
+            return null;
+        }
+
         int chunkX = pos.getX() >> 4;
         int chunkZ = pos.getZ() >> 4;
         int rx = chunkToRegionCoord(chunkX);
@@ -121,8 +131,11 @@ public final class ServerDecorationWorldIndex {
         DecorationRecord record = new DecorationRecord(id, bounds, revision, payload);
         region.addOrUpdate(record);
 
+        if (existing == null) {
+            indexedDecorationCount.incrementAndGet();
+        }
         TelemetryMetrics.SERVER_ADDS.incrementAndGet();
-        TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(getTotalIndexedDecorations());
+        TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(indexedDecorationCount.get());
 
         // Notify network manager
         ServerNetworkManager.getInstance().broadcastDelta(level.dimension(), rx, rz, region.revision(), List.of(record), Collections.emptyList());
@@ -158,7 +171,8 @@ public final class ServerDecorationWorldIndex {
             region.remove(id);
             TelemetryMetrics.SERVER_REMOVES.incrementAndGet();
         }
-        TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(getTotalIndexedDecorations());
+        indexedDecorationCount.addAndGet(-toRemove.size());
+        TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(indexedDecorationCount.get());
 
         ServerNetworkManager.getInstance().broadcastDelta(level.dimension(), rx, rz, region.revision(), Collections.emptyList(), toRemove);
         return true;
@@ -200,7 +214,8 @@ public final class ServerDecorationWorldIndex {
                 region.remove(id);
                 TelemetryMetrics.SERVER_REMOVES.incrementAndGet();
             }
-            TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(getTotalIndexedDecorations());
+            indexedDecorationCount.addAndGet(-removed.size());
+            TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(indexedDecorationCount.get());
             ServerNetworkManager.getInstance().broadcastDelta(level.dimension(), rx, rz, region.revision(), Collections.emptyList(), removed);
         }
     }
@@ -239,18 +254,15 @@ public final class ServerDecorationWorldIndex {
                     saveRegionToFile(region);
                 }
                 iterator.remove();
+                indexedDecorationCount.addAndGet(-region.size());
                 TelemetryMetrics.SERVER_REGIONS.decrementAndGet();
-                TelemetryMetrics.SERVER_INDEXED_DECORATIONS.addAndGet(-region.size());
+                TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(indexedDecorationCount.get());
             }
         }
     }
 
     public int getTotalIndexedDecorations() {
-        int total = 0;
-        for (ServerDecorationRegion region : loadedRegions.values()) {
-            total += region.size();
-        }
-        return total;
+        return (int) indexedDecorationCount.get();
     }
 
     private Path getRegionFilePath(int rx, int rz) {
@@ -266,7 +278,7 @@ public final class ServerDecorationWorldIndex {
         try (DataInputStream dis = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
             return ServerDecorationRegion.readFromStream(dis);
         } catch (Exception e) {
-            DistantDecorations.LOGGER.error("Failed to load region file {} for {}", path, level.dimension().identifier(), e);
+            DistantDecorations.LOGGER.error("Failed to load region file {} for {}", path, level != null ? level.dimension().identifier() : "test", e);
             return null;
         }
     }

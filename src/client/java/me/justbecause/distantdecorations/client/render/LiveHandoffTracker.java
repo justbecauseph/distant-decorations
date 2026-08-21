@@ -14,12 +14,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class LiveHandoffTracker {
-    private static final LiveHandoffTracker INSTANCE = new LiveHandoffTracker();
-
-    public static LiveHandoffTracker getInstance() {
-        return INSTANCE;
-    }
-
     public enum HandoffState {
         DISTANT,
         WAITING_FOR_LIVE,
