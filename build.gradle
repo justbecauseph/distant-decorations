@@ -61,6 +61,7 @@ dependencies {
 
 	runtimeOnly "maven.modrinth:voxy:${project.voxy_version}"
 	runtimeOnly "maven.modrinth:sodium:${project.sodium_version}"
+	runtimeOnly "maven.modrinth:spark:${project.spark_version}"
 
 	testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
