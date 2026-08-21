@@ -97,7 +97,7 @@ public final class ClientNetworkManager {
 
                 int cx = client.player.getBlockX() >> 4;
                 int cz = client.player.getBlockZ() >> 4;
-                if (Math.abs(cx - lastChunkX) >= 8 || Math.abs(cz - lastChunkZ) >= 8) {
+                if (Math.abs(cx - lastChunkX) >= 2 || Math.abs(cz - lastChunkZ) >= 2) {
                     lastChunkX = cx;
                     lastChunkZ = cz;
                     sendSubscriptionUpdate(cx, cz);
