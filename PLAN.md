@@ -1001,3 +1001,5 @@ repos:
 - C:\Users\markj\source\repos\voxy
 - C:\Users\markj\source\repos\OptimisedBlockEntities
 - C:\Users\markj\source\repos\Chunky
+- C:\Users\markj\source\repos\Iris
+- C:\Users\markj\source\repos\sodium
