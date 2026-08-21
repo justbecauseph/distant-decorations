@@ -22,6 +22,7 @@ public final class TelemetryMetrics {
     public static long clientObjectsFrustumRejected;
     public static long clientDistanceRejected;
     public static long clientSubpixelRejected;
+    public static long clientFarLodScaledRenders;
     public static long clientBudgetRejected;
     public static long clientLiveSuppressions;
     public static long clientRenderedDecorations;
@@ -42,6 +43,7 @@ public final class TelemetryMetrics {
         clientObjectsFrustumRejected = 0;
         clientDistanceRejected = 0;
         clientSubpixelRejected = 0;
+        clientFarLodScaledRenders = 0;
         clientBudgetRejected = 0;
         clientLiveSuppressions = 0;
         clientRenderedDecorations = 0;

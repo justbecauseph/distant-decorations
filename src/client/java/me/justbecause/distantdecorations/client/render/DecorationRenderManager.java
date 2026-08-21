@@ -147,8 +147,11 @@ public final class DecorationRenderManager {
                         continue;
                     }
 
+                    DecorationClientRenderer<?> decoRenderer = deco.renderer();
+                    double effectiveMinPixelSize = (decoRenderer != null) ? decoRenderer.cullBelowProjectedPixelSize() : minPixelSize;
+
                     double projectedPixelSize = metrics.calculateProjectedPixelSize(bounds);
-                    if (projectedPixelSize < minPixelSize) {
+                    if (projectedPixelSize < effectiveMinPixelSize) {
                         TelemetryMetrics.clientSubpixelRejected++;
                         continue;
                     }

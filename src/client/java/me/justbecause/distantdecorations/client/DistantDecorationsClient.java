@@ -34,6 +34,7 @@ public class DistantDecorationsClient implements ClientModInitializer {
                                 long suppressed = TelemetryMetrics.clientLiveSuppressions;
                                 long distance = TelemetryMetrics.clientDistanceRejected;
                                 long subpixel = TelemetryMetrics.clientSubpixelRejected;
+                                long farLod = TelemetryMetrics.clientFarLodScaledRenders;
                                 long frustum = TelemetryMetrics.clientObjectsFrustumRejected;
                                 long budget = TelemetryMetrics.clientBudgetRejected;
 
@@ -47,13 +48,14 @@ public class DistantDecorationsClient implements ClientModInitializer {
                                         "• Config: %d chunks sub-radius | %.0f blocks max-dist | %.2f px min-size\n" +
                                         "• Synced Regions: %d | Total Client Decorations: %d\n" +
                                         "• Last Frame Visible/Rendered: %d\n" +
+                                        "• Last Frame Far-LOD Scaled: %d\n" +
                                         "• Last Frame Suppressed (Live): %d\n" +
                                         "• Last Frame Culled (Distance): %d\n" +
                                         "• Last Frame Culled (Subpixel): %d\n" +
                                         "• Last Frame Culled (Frustum): %d\n" +
                                         "• Last Frame Culled (Budget): %d",
                                         subRadius, maxDist, minPixel,
-                                        regions, decos, visible, suppressed, distance, subpixel, frustum, budget
+                                        regions, decos, visible, farLod, suppressed, distance, subpixel, frustum, budget
                                     )
                                 ));
                             }

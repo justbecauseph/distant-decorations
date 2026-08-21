@@ -4,12 +4,22 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import me.justbecause.distantdecorations.api.DecorationRecord;
 import me.justbecause.distantdecorations.api.DecorationType;
 import me.justbecause.distantdecorations.client.spatial.ProjectionMetrics;
+import me.justbecause.distantdecorations.config.DistantDecorationsConfig;
 import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.culling.Frustum;
 
 public interface DecorationClientRenderer<T> {
     DecorationType<T> type();
+
+    /**
+     * Minimum projected screen pixel size below which this renderer wants DD to cull the object.
+     * Default is DistantDecorationsConfig.getMinProjectedPixelSize().
+     * Far-LOD enabled renderers can return a lower value (e.g. 0.01 or 0.0) to handle far-LOD impostors.
+     */
+    default double cullBelowProjectedPixelSize() {
+        return DistantDecorationsConfig.getMinProjectedPixelSize();
+    }
 
     /**
      * Called once at the beginning of the distant decoration render frame before any objects are submitted.
