@@ -1,6 +1,7 @@
 package me.justbecause.distantdecorations.client.render;
 
 import me.justbecause.distantdecorations.api.DecorationRecord;
+import me.justbecause.distantdecorations.client.spatial.ClientDecoration;
 
 import java.util.Comparator;
 
@@ -10,13 +11,18 @@ public final class RenderBudget {
     private double maxRenderDistance = 4096.0;
 
     public record RenderCandidate(
-        DecorationRecord record,
+        ClientDecoration decoration,
         double projectedPixelSize,
         double distanceSq,
         double priorityScore
-    ) {}
+    ) {
+        public DecorationRecord record() {
+            return decoration.record();
+        }
+    }
 
     public static final Comparator<RenderCandidate> PRIORITY_COMPARATOR = (a, b) -> Double.compare(b.priorityScore(), a.priorityScore());
+    public static final Comparator<RenderCandidate> MIN_HEAP_COMPARATOR = (a, b) -> Double.compare(a.priorityScore(), b.priorityScore());
 
     public int getMaxSubmissionsPerFrame() {
         return maxSubmissionsPerFrame;
@@ -47,3 +53,4 @@ public final class RenderBudget {
         return projectedPixelSize * 1000.0 - Math.sqrt(distanceSq);
     }
 }
+

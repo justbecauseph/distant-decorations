@@ -1,13 +1,15 @@
 package me.justbecause.distantdecorations.provider;
 
-import me.justbecause.distantdecorations.provider.camerapture.CameraptureProvider;
-import me.justbecause.distantdecorations.provider.camerapture.DistantPictureFrameData;
-import me.justbecause.distantdecorations.provider.painting.DistantPaintingData;
-import me.justbecause.distantdecorations.provider.painting.FastPaintingsProvider;
+import me.justbecause.distantdecorations.api.DecorationProvider;
+import me.justbecause.distantdecorations.api.DecorationRegistry;
+import me.justbecause.distantdecorations.api.DecorationType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.AABB;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
@@ -16,9 +18,67 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class ProviderTest {
 
+    public record TestPaintingData(
+        Identifier variant,
+        Direction facing,
+        int width,
+        int height,
+        int packedLight
+    ) {}
+
+    public static final DecorationType<TestPaintingData> TEST_PAINTING_TYPE = new DecorationType<>(
+        Identifier.fromNamespaceAndPath("test", "painting"),
+        (data, buf) -> {
+            buf.writeIdentifier(data.variant());
+            buf.writeEnum(data.facing());
+            buf.writeVarInt(data.width());
+            buf.writeVarInt(data.height());
+            buf.writeInt(data.packedLight());
+        },
+        buf -> new TestPaintingData(
+            buf.readIdentifier(),
+            buf.readEnum(Direction.class),
+            buf.readVarInt(),
+            buf.readVarInt(),
+            buf.readInt()
+        )
+    );
+
+    public record TestPictureFrameData(
+        UUID pictureId,
+        Direction facing,
+        int width,
+        int height,
+        int rotation,
+        boolean glow,
+        int packedLight
+    ) {}
+
+    public static final DecorationType<TestPictureFrameData> TEST_FRAME_TYPE = new DecorationType<>(
+        Identifier.fromNamespaceAndPath("test", "picture_frame"),
+        (data, buf) -> {
+            buf.writeUUID(data.pictureId());
+            buf.writeEnum(data.facing());
+            buf.writeVarInt(data.width());
+            buf.writeVarInt(data.height());
+            buf.writeVarInt(data.rotation());
+            buf.writeBoolean(data.glow());
+            buf.writeInt(data.packedLight());
+        },
+        buf -> new TestPictureFrameData(
+            buf.readUUID(),
+            buf.readEnum(Direction.class),
+            buf.readVarInt(),
+            buf.readVarInt(),
+            buf.readVarInt(),
+            buf.readBoolean(),
+            buf.readInt()
+        )
+    );
+
     @Test
-    public void testFastPaintingDataSerializationRoundTrip() {
-        DistantPaintingData data = new DistantPaintingData(
+    public void testPaintingDataSerializationRoundTrip() {
+        TestPaintingData data = new TestPaintingData(
             Identifier.fromNamespaceAndPath("minecraft", "kebab"),
             Direction.SOUTH,
             2,
@@ -26,10 +86,10 @@ public class ProviderTest {
             0x00F000F0
         );
 
-        byte[] bytes = FastPaintingsProvider.TYPE.toBytes(data);
+        byte[] bytes = TEST_PAINTING_TYPE.toBytes(data);
         assertNotNull(bytes);
 
-        DistantPaintingData decoded = FastPaintingsProvider.TYPE.fromBytes(bytes);
+        TestPaintingData decoded = TEST_PAINTING_TYPE.fromBytes(bytes);
         assertEquals(data.variant(), decoded.variant());
         assertEquals(data.facing(), decoded.facing());
         assertEquals(data.width(), decoded.width());
@@ -38,20 +98,9 @@ public class ProviderTest {
     }
 
     @Test
-    public void testFastPaintingBoundingBox() {
-        BlockPos pos = new BlockPos(100, 64, 200);
-        AABB aabb = FastPaintingsProvider.calculateBoundingBox(pos, Direction.NORTH, 2, 2);
-
-        assertNotNull(aabb);
-        assertEquals(2.0, aabb.getXsize(), 0.001);
-        assertEquals(2.0, aabb.getYsize(), 0.001);
-        assertEquals(0.0625, aabb.getZsize(), 0.001);
-    }
-
-    @Test
-    public void testCameraptureDataSerializationRoundTrip() {
+    public void testPictureFrameDataSerializationRoundTrip() {
         UUID pictureId = UUID.randomUUID();
-        DistantPictureFrameData data = new DistantPictureFrameData(
+        TestPictureFrameData data = new TestPictureFrameData(
             pictureId,
             Direction.EAST,
             3,
@@ -61,10 +110,10 @@ public class ProviderTest {
             0x00F000F0
         );
 
-        byte[] bytes = CameraptureProvider.TYPE.toBytes(data);
+        byte[] bytes = TEST_FRAME_TYPE.toBytes(data);
         assertNotNull(bytes);
 
-        DistantPictureFrameData decoded = CameraptureProvider.TYPE.fromBytes(bytes);
+        TestPictureFrameData decoded = TEST_FRAME_TYPE.fromBytes(bytes);
         assertEquals(data.pictureId(), decoded.pictureId());
         assertEquals(data.facing(), decoded.facing());
         assertEquals(data.width(), decoded.width());
@@ -75,13 +124,9 @@ public class ProviderTest {
     }
 
     @Test
-    public void testCameraptureBoundingBox() {
-        BlockPos pos = new BlockPos(50, 70, 80);
-        AABB aabb = CameraptureProvider.calculateBounds(pos, Direction.EAST, 4, 3);
-
-        assertNotNull(aabb);
-        assertEquals(0.0625, aabb.getXsize(), 0.001);
-        assertEquals(3.0, aabb.getYsize(), 0.001);
-        assertEquals(4.0, aabb.getZsize(), 0.001);
+    public void testDecorationRegistryRegistration() {
+        DecorationRegistry.registerType(TEST_PAINTING_TYPE);
+        assertEquals(TEST_PAINTING_TYPE, DecorationRegistry.getType(TEST_PAINTING_TYPE.id()));
     }
 }
+

@@ -3,6 +3,7 @@ package me.justbecause.distantdecorations.spatial;
 import me.justbecause.distantdecorations.api.DecorationId;
 import me.justbecause.distantdecorations.api.DecorationRecord;
 import me.justbecause.distantdecorations.client.render.RenderBudget;
+import me.justbecause.distantdecorations.client.spatial.ClientDecoration;
 import me.justbecause.distantdecorations.client.spatial.ClientDecorationRegion;
 import me.justbecause.distantdecorations.client.spatial.ClientDecorationWorld;
 import me.justbecause.distantdecorations.client.spatial.DecorationRenderCell;
@@ -64,11 +65,19 @@ public class SpatialIndexTest {
         region.addOrUpdate(record2);
 
         assertEquals(2, region.size());
-        assertEquals(2, region.getNonEmptyCells().size());
+        int nonEmptyCount = 0;
+        for (DecorationRenderCell cell : region.getCells()) {
+            if (!cell.isEmpty()) nonEmptyCount++;
+        }
+        assertEquals(2, nonEmptyCount);
 
         region.remove(id1);
         assertEquals(1, region.size());
-        assertEquals(1, region.getNonEmptyCells().size());
+        nonEmptyCount = 0;
+        for (DecorationRenderCell cell : region.getCells()) {
+            if (!cell.isEmpty()) nonEmptyCount++;
+        }
+        assertEquals(1, nonEmptyCount);
     }
 
     @Test
@@ -95,6 +104,35 @@ public class SpatialIndexTest {
         world.unloadRegion(0, 0);
         assertNull(world.getRegion(0, 0));
         assertEquals(0, world.getTotalDecorationsCount());
+    }
+
+    @Test
+    public void testMultipartSnapshotAssembly() {
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("minecraft", "overworld"));
+        ClientDecorationWorld world = new ClientDecorationWorld(dim);
+        Identifier type = Identifier.fromNamespaceAndPath("test", "painting");
+
+        DecorationRecord r1 = new DecorationRecord(new DecorationId(type, dim, new BlockPos(10, 64, 10)), new AABB(10, 64, 10, 12, 66, 10.1), 1L, new byte[]{1});
+        DecorationRecord r2 = new DecorationRecord(new DecorationId(type, dim, new BlockPos(20, 64, 20)), new AABB(20, 64, 20, 22, 66, 20.1), 1L, new byte[]{2});
+        DecorationRecord r3 = new DecorationRecord(new DecorationId(type, dim, new BlockPos(30, 64, 30)), new AABB(30, 64, 30, 32, 66, 30.1), 1L, new byte[]{3});
+        DecorationRecord r4 = new DecorationRecord(new DecorationId(type, dim, new BlockPos(40, 64, 40)), new AABB(40, 64, 40, 42, 66, 40.1), 1L, new byte[]{4});
+
+        // 3-part snapshot for region (1, 1)
+        // Part 0
+        world.putSnapshotPart(1, 1, 5L, 0, 3, List.of(r1));
+        assertNull(world.getRegion(1, 1), "Region should not be exposed until all parts arrive");
+
+        // Part 1
+        world.putSnapshotPart(1, 1, 5L, 1, 3, List.of(r2, r3));
+        assertNull(world.getRegion(1, 1), "Region should not be exposed until all parts arrive");
+
+        // Part 2 (Final part)
+        world.putSnapshotPart(1, 1, 5L, 2, 3, List.of(r4));
+        assertNotNull(world.getRegion(1, 1), "Region should now be atomically visible");
+        assertEquals(4, world.getRegion(1, 1).size());
+        assertEquals(5L, world.getRegion(1, 1).revision());
+        assertTrue(world.getRegion(1, 1).getAllRecords().contains(r1));
+        assertTrue(world.getRegion(1, 1).getAllRecords().contains(r4));
     }
 
     @Test
@@ -130,8 +168,8 @@ public class SpatialIndexTest {
         DecorationId id2 = new DecorationId(type, dim, new BlockPos(500, 64, 500));
         DecorationRecord r2 = new DecorationRecord(id2, new AABB(500, 64, 500, 501, 65, 500.1), 1L, new byte[]{});
 
-        RenderBudget.RenderCandidate cNearLarge = new RenderBudget.RenderCandidate(r1, 50.0, 100.0, 50.0 * 1000.0 - 10.0);
-        RenderBudget.RenderCandidate cFarSmall = new RenderBudget.RenderCandidate(r2, 2.0, 500000.0, 2.0 * 1000.0 - 707.0);
+        RenderBudget.RenderCandidate cNearLarge = new RenderBudget.RenderCandidate(new ClientDecoration(r1), 50.0, 100.0, 50.0 * 1000.0 - 10.0);
+        RenderBudget.RenderCandidate cFarSmall = new RenderBudget.RenderCandidate(new ClientDecoration(r2), 2.0, 500000.0, 2.0 * 1000.0 - 707.0);
 
         List<RenderBudget.RenderCandidate> list = new ArrayList<>();
         list.add(cFarSmall);
@@ -143,3 +181,4 @@ public class SpatialIndexTest {
         assertEquals(cFarSmall, list.get(1));
     }
 }
+

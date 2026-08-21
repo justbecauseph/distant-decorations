@@ -1,8 +1,11 @@
 package me.justbecause.distantdecorations.client.render;
 
 import me.justbecause.distantdecorations.api.DecorationId;
+import me.justbecause.distantdecorations.api.DecorationProvider;
+import me.justbecause.distantdecorations.api.DecorationRegistry;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
@@ -17,15 +20,15 @@ public final class LiveHandoffTracker {
         LIVE
     }
 
-    private final Map<BlockPos, Long> chunkLoadTimes = new ConcurrentHashMap<>();
+    private final Map<Long, Long> chunkLoadTimes = new ConcurrentHashMap<>();
     private static final long WAITING_GRACE_PERIOD_MS = 200; // 200ms grace period for BE sync packets
 
     public void onChunkLoaded(int chunkX, int chunkZ) {
-        // chunk loaded notification
+        chunkLoadTimes.put(ChunkPos.pack(chunkX, chunkZ), System.currentTimeMillis());
     }
 
     public void onChunkUnloaded(int chunkX, int chunkZ) {
-        // chunk unloaded notification
+        chunkLoadTimes.remove(ChunkPos.pack(chunkX, chunkZ));
     }
 
     public void clear() {
@@ -53,12 +56,21 @@ public final class LiveHandoffTracker {
 
         BlockEntity be = chunk.getBlockEntity(pos);
         if (be != null) {
-            // Real BE exists in loaded chunk -> LIVE -> suppress distant renderer
-            return true;
+            DecorationProvider<?> provider = DecorationRegistry.findProvider(be);
+            if (provider == null || provider.type().id().equals(id.type())) {
+                // Real matching BE exists in loaded chunk -> LIVE -> suppress distant renderer
+                return true;
+            }
         }
 
         // Chunk is loaded, but BE not yet in block entity map (WAITING_FOR_LIVE)
         // Check if chunk was loaded recently to avoid 1-frame flickering
+        Long loadTime = chunkLoadTimes.get(ChunkPos.pack(chunkX, chunkZ));
+        if (loadTime != null && (System.currentTimeMillis() - loadTime) < WAITING_GRACE_PERIOD_MS) {
+            // Waiting for BE sync, keep rendering distant decoration
+            return false;
+        }
+
         return false;
     }
 
@@ -78,7 +90,10 @@ public final class LiveHandoffTracker {
 
         BlockEntity be = chunk.getBlockEntity(pos);
         if (be != null) {
-            return HandoffState.LIVE;
+            DecorationProvider<?> provider = DecorationRegistry.findProvider(be);
+            if (provider == null || provider.type().id().equals(id.type())) {
+                return HandoffState.LIVE;
+            }
         }
 
         return HandoffState.WAITING_FOR_LIVE;

@@ -1,10 +1,7 @@
 package me.justbecause.distantdecorations.client;
 
 import me.justbecause.distantdecorations.DistantDecorations;
-import me.justbecause.distantdecorations.api.client.ClientDecorationRegistry;
 import me.justbecause.distantdecorations.client.network.ClientNetworkManager;
-import me.justbecause.distantdecorations.client.provider.camerapture.CameraptureClientRenderer;
-import me.justbecause.distantdecorations.client.provider.painting.FastPaintingsClientRenderer;
 import me.justbecause.distantdecorations.client.render.DecorationRenderManager;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
@@ -14,10 +11,8 @@ public class DistantDecorationsClient implements ClientModInitializer {
     public void onInitializeClient() {
         DistantDecorations.LOGGER.info("Distant Decorations Client initializing...");
 
-        ClientDecorationRegistry.registerRenderer(new FastPaintingsClientRenderer());
-        ClientDecorationRegistry.registerRenderer(new CameraptureClientRenderer());
-
         ClientNetworkManager.getInstance().init();
         LevelRenderEvents.COLLECT_SUBMITS.register(context -> DecorationRenderManager.getInstance().renderFrame(context));
     }
 }
+

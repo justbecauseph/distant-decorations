@@ -3,6 +3,7 @@ package me.justbecause.distantdecorations.client.spatial;
 import me.justbecause.distantdecorations.api.DecorationId;
 import me.justbecause.distantdecorations.api.DecorationRecord;
 import net.minecraft.world.phys.AABB;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -18,9 +19,9 @@ public final class ClientDecorationRegion {
     private final int regionX;
     private final int regionZ;
     private final DecorationRenderCell[] cells = new DecorationRenderCell[CELLS_PER_REGION_AXIS * CELLS_PER_REGION_AXIS];
-    private final Map<DecorationId, DecorationRecord> allRecords = new ConcurrentHashMap<>();
+    private final Map<DecorationId, ClientDecoration> allDecorations = new ConcurrentHashMap<>();
     private volatile long revision;
-    private final AABB regionBounds;
+    private volatile @Nullable AABB dynamicBounds = null;
 
     public ClientDecorationRegion(int regionX, int regionZ, long revision) {
         this.regionX = regionX;
@@ -35,10 +36,6 @@ public final class ClientDecorationRegion {
                 cells[index] = new DecorationRenderCell(baseCellX + cx, baseCellZ + cz);
             }
         }
-
-        double minX = (double) (regionX * BLOCKS_PER_REGION_AXIS);
-        double minZ = (double) (regionZ * BLOCKS_PER_REGION_AXIS);
-        this.regionBounds = new AABB(minX, -64.0, minZ, minX + BLOCKS_PER_REGION_AXIS, 320.0, minZ + BLOCKS_PER_REGION_AXIS);
     }
 
     public int regionX() {
@@ -57,20 +54,29 @@ public final class ClientDecorationRegion {
         this.revision = revision;
     }
 
+    @Nullable
     public AABB bounds() {
-        return regionBounds;
+        return dynamicBounds;
     }
 
     public int size() {
-        return allRecords.size();
+        return allDecorations.size();
     }
 
     public boolean isEmpty() {
-        return allRecords.isEmpty();
+        return allDecorations.isEmpty();
+    }
+
+    public Collection<ClientDecoration> getAllDecorations() {
+        return allDecorations.values();
     }
 
     public Collection<DecorationRecord> getAllRecords() {
-        return allRecords.values();
+        List<DecorationRecord> list = new ArrayList<>(allDecorations.size());
+        for (ClientDecoration deco : allDecorations.values()) {
+            list.add(deco.record());
+        }
+        return list;
     }
 
     public DecorationRenderCell[] getCells() {
@@ -86,31 +92,57 @@ public final class ClientDecorationRegion {
     }
 
     public void addOrUpdate(DecorationRecord record) {
-        allRecords.put(record.id(), record);
-        getCellForBlock(record.id().anchor().getX(), record.id().anchor().getZ()).addOrUpdate(record);
+        ClientDecoration deco = new ClientDecoration(record);
+        allDecorations.put(record.id(), deco);
+        getCellForBlock(record.id().anchor().getX(), record.id().anchor().getZ()).addOrUpdate(deco);
+        recalculateBounds();
     }
 
     public void remove(DecorationId id) {
-        DecorationRecord existing = allRecords.remove(id);
+        ClientDecoration existing = allDecorations.remove(id);
         if (existing != null) {
             getCellForBlock(id.anchor().getX(), id.anchor().getZ()).remove(id);
+            recalculateBounds();
         }
     }
 
     public void clear() {
-        allRecords.clear();
+        allDecorations.clear();
         for (DecorationRenderCell cell : cells) {
             cell.clear();
         }
+        dynamicBounds = null;
     }
 
-    public List<DecorationRenderCell> getNonEmptyCells() {
-        List<DecorationRenderCell> result = new ArrayList<>();
+    public void recalculateBounds() {
+        if (allDecorations.isEmpty()) {
+            dynamicBounds = null;
+            return;
+        }
+
+        double minX = Double.POSITIVE_INFINITY;
+        double minY = Double.POSITIVE_INFINITY;
+        double minZ = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY;
+        double maxY = Double.NEGATIVE_INFINITY;
+        double maxZ = Double.NEGATIVE_INFINITY;
+
         for (DecorationRenderCell cell : cells) {
             if (!cell.isEmpty()) {
-                result.add(cell);
+                AABB cb = cell.getBounds();
+                if (cb.minX < minX) minX = cb.minX;
+                if (cb.minY < minY) minY = cb.minY;
+                if (cb.minZ < minZ) minZ = cb.minZ;
+                if (cb.maxX > maxX) maxX = cb.maxX;
+                if (cb.maxY > maxY) maxY = cb.maxY;
+                if (cb.maxZ > maxZ) maxZ = cb.maxZ;
             }
         }
-        return result;
+
+        if (Double.isInfinite(minX)) {
+            dynamicBounds = null;
+        } else {
+            dynamicBounds = new AABB(minX, minY, minZ, maxX, maxY, maxZ);
+        }
     }
 }

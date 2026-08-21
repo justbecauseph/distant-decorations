@@ -1,11 +1,9 @@
 package me.justbecause.distantdecorations.client.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
-import me.justbecause.distantdecorations.api.DecorationId;
-import me.justbecause.distantdecorations.api.DecorationRecord;
-import me.justbecause.distantdecorations.api.DecorationType;
 import me.justbecause.distantdecorations.api.client.ClientDecorationRegistry;
 import me.justbecause.distantdecorations.api.client.DecorationClientRenderer;
+import me.justbecause.distantdecorations.client.spatial.ClientDecoration;
 import me.justbecause.distantdecorations.client.spatial.ClientDecorationRegion;
 import me.justbecause.distantdecorations.client.spatial.ClientDecorationWorld;
 import me.justbecause.distantdecorations.client.spatial.DecorationRenderCell;
@@ -32,6 +30,8 @@ public final class DecorationRenderManager {
     private final LiveHandoffTracker handoffTracker = new LiveHandoffTracker();
     private final RenderBudget budget = new RenderBudget();
     private final List<RenderBudget.RenderCandidate> candidateList = new ArrayList<>(2048);
+    private final PriorityQueue<RenderBudget.RenderCandidate> topKHeap = new PriorityQueue<>(2048, RenderBudget.MIN_HEAP_COMPARATOR);
+    private final Set<DecorationClientRenderer<?>> activeRenderers = new HashSet<>();
 
     private DecorationRenderManager() {}
 
@@ -89,9 +89,13 @@ public final class DecorationRenderManager {
 
         TelemetryMetrics.beginClientFrame();
         candidateList.clear();
+        topKHeap.clear();
+        activeRenderers.clear();
 
         double maxDistSq = budget.getMaxRenderDistance() * budget.getMaxRenderDistance();
         double minPixelSize = budget.getMinProjectedPixelSize();
+        int maxSubmissions = budget.getMaxSubmissionsPerFrame();
+        boolean useHeap = false;
 
         // 1. Region & Cell Frustum Culling
         for (ClientDecorationRegion region : world.getAllRegions()) {
@@ -99,11 +103,19 @@ public final class DecorationRenderManager {
                 continue;
             }
 
-            if (frustum != null && !frustum.isVisible(region.bounds())) {
+            AABB regionBounds = region.bounds();
+            if (regionBounds == null) {
                 continue;
             }
 
-            for (DecorationRenderCell cell : region.getNonEmptyCells()) {
+            if (frustum != null && !frustum.isVisible(regionBounds)) {
+                continue;
+            }
+
+            for (DecorationRenderCell cell : region.getCells()) {
+                if (cell.isEmpty()) {
+                    continue;
+                }
                 TelemetryMetrics.clientCellsChecked++;
 
                 if (frustum != null && !frustum.isVisible(cell.getBounds())) {
@@ -112,10 +124,13 @@ public final class DecorationRenderManager {
                 }
 
                 // 2. Object Frustum Culling & Projected-Size Filtering
-                for (DecorationRecord record : cell.getRecords()) {
+                for (ClientDecoration deco : cell.getDecorations()) {
+                    if (!deco.isValid()) {
+                        continue;
+                    }
                     TelemetryMetrics.clientObjectsChecked++;
 
-                    AABB bounds = record.bounds();
+                    AABB bounds = deco.bounds();
                     double distSq = metrics.getDistanceSq(bounds);
                     if (distSq > maxDistSq) {
                         continue;
@@ -133,51 +148,63 @@ public final class DecorationRenderManager {
                     }
 
                     // 3. Live-BE Suppression Check
-                    if (handoffTracker.isSuppressed(record.id(), level)) {
+                    if (handoffTracker.isSuppressed(deco.id(), level)) {
                         TelemetryMetrics.clientLiveSuppressions++;
                         continue;
                     }
 
                     double priority = budget.calculatePriority(projectedPixelSize, distSq);
-                    candidateList.add(new RenderBudget.RenderCandidate(record, projectedPixelSize, distSq, priority));
+                    RenderBudget.RenderCandidate candidate = new RenderBudget.RenderCandidate(deco, projectedPixelSize, distSq, priority);
+
+                    // 4. Bounded Top-K Selection
+                    if (!useHeap) {
+                        if (candidateList.size() < maxSubmissions) {
+                            candidateList.add(candidate);
+                        } else {
+                            useHeap = true;
+                            topKHeap.addAll(candidateList);
+                            candidateList.clear();
+                            if (priority > topKHeap.peek().priorityScore()) {
+                                topKHeap.poll();
+                                topKHeap.add(candidate);
+                            }
+                            TelemetryMetrics.clientBudgetRejected++;
+                        }
+                    } else {
+                        if (priority > topKHeap.peek().priorityScore()) {
+                            topKHeap.poll();
+                            topKHeap.add(candidate);
+                        }
+                        TelemetryMetrics.clientBudgetRejected++;
+                    }
                 }
             }
+        }
+
+        if (useHeap) {
+            candidateList.addAll(topKHeap);
+            topKHeap.clear();
         }
 
         if (candidateList.isEmpty()) {
             return;
         }
 
-        // 4. Priority Sorting & Budget Enforcing
         candidateList.sort(RenderBudget.PRIORITY_COMPARATOR);
 
-        int maxSubmissions = budget.getMaxSubmissionsPerFrame();
-        int submissionsCount = Math.min(candidateList.size(), maxSubmissions);
-        if (candidateList.size() > maxSubmissions) {
-            TelemetryMetrics.clientBudgetRejected += (candidateList.size() - maxSubmissions);
-        }
-
         // 5. Notify renderers: beginFrame
-        Set<DecorationClientRenderer<?>> activeRenderers = new HashSet<>();
-        for (int i = 0; i < submissionsCount; i++) {
-            RenderBudget.RenderCandidate candidate = candidateList.get(i);
-            DecorationClientRenderer<?> renderer = ClientDecorationRegistry.getRenderer(candidate.record().id().type());
-            if (renderer != null) {
-                activeRenderers.add(renderer);
-            }
-        }
-
-        for (DecorationClientRenderer<?> renderer : activeRenderers) {
+        for (DecorationClientRenderer<?> renderer : ClientDecorationRegistry.getRenderers()) {
             renderer.beginFrame(camera, frustum, metrics);
         }
 
-        // 6. Submit Render Calls
-        for (int i = 0; i < submissionsCount; i++) {
-            RenderBudget.RenderCandidate candidate = candidateList.get(i);
-            DecorationRecord record = candidate.record();
-            DecorationClientRenderer<?> renderer = ClientDecorationRegistry.getRenderer(record.id().type());
-            if (renderer != null) {
-                renderTyped(renderer, record, camera, poseStack, submitNodeCollector, metrics, candidate.projectedPixelSize());
+        // 6. Submit Render Calls (Zero payload deserialization!)
+        for (RenderBudget.RenderCandidate candidate : candidateList) {
+            ClientDecoration deco = candidate.decoration();
+            DecorationClientRenderer<Object> renderer = deco.renderer();
+            Object payload = deco.decodedPayload();
+            if (renderer != null && payload != null) {
+                activeRenderers.add(renderer);
+                renderer.render(deco.record(), payload, camera, poseStack, submitNodeCollector, metrics, candidate.projectedPixelSize());
                 TelemetryMetrics.clientRenderedDecorations++;
                 TelemetryMetrics.CLIENT_TOTAL_RENDERED.incrementAndGet();
             }
@@ -188,19 +215,5 @@ public final class DecorationRenderManager {
             renderer.flush(camera, poseStack, submitNodeCollector);
         }
     }
-
-    @SuppressWarnings("unchecked")
-    private <T> void renderTyped(
-        DecorationClientRenderer<T> renderer,
-        DecorationRecord record,
-        Camera camera,
-        PoseStack poseStack,
-        SubmitNodeCollector submitNodeCollector,
-        ProjectionMetrics metrics,
-        double projectedPixelSize
-    ) {
-        DecorationType<T> type = renderer.type();
-        T data = type.fromBytes(record.payload());
-        renderer.render(record, data, camera, poseStack, submitNodeCollector, metrics, projectedPixelSize);
-    }
 }
+

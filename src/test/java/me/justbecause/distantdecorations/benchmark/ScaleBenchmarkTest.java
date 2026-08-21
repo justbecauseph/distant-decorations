@@ -3,6 +3,7 @@ package me.justbecause.distantdecorations.benchmark;
 import me.justbecause.distantdecorations.api.DecorationId;
 import me.justbecause.distantdecorations.api.DecorationRecord;
 import me.justbecause.distantdecorations.client.render.RenderBudget;
+import me.justbecause.distantdecorations.client.spatial.ClientDecoration;
 import me.justbecause.distantdecorations.client.spatial.ClientDecorationRegion;
 import me.justbecause.distantdecorations.client.spatial.ClientDecorationWorld;
 import me.justbecause.distantdecorations.client.spatial.DecorationRenderCell;
@@ -19,13 +20,14 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.PriorityQueue;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 public class ScaleBenchmarkTest {
 
     @Test
-    public void benchmark50kDecorationsSpatialCullingAndBudgeting() {
+    public void benchmark50kDecorationsSpatialCullingAndTopKSelection() {
         final int TOTAL_DECORATIONS = 50_000;
         ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("minecraft", "overworld"));
         Identifier typeId = Identifier.fromNamespaceAndPath("minecraft", "painting");
@@ -54,63 +56,90 @@ public class ScaleBenchmarkTest {
 
         assertEquals(TOTAL_DECORATIONS, world.getTotalDecorationsCount());
 
-        // Simulate 100 frames of camera movement and query
+        // Simulate 100 frames of camera movement and spatial culling + top-K selection query
         Vec3 cameraPos = new Vec3(256.0, 70.0, -100.0);
         ProjectionMetrics metrics = ProjectionMetrics.of(cameraPos, 1920, 1080, 70.0);
         RenderBudget budget = new RenderBudget();
-        budget.setMaxSubmissionsPerFrame(2000);
+        int maxSubmissions = 2000;
+        budget.setMaxSubmissionsPerFrame(maxSubmissions);
         budget.setMinProjectedPixelSize(1.0);
 
         long startQuery = System.nanoTime();
         int frames = 100;
         int totalRenderCandidates = 0;
 
+        List<RenderBudget.RenderCandidate> candidateList = new ArrayList<>(2048);
+        PriorityQueue<RenderBudget.RenderCandidate> topKHeap = new PriorityQueue<>(2048, RenderBudget.MIN_HEAP_COMPARATOR);
+
         for (int f = 0; f < frames; f++) {
-            List<RenderBudget.RenderCandidate> frameCandidates = new ArrayList<>();
+            candidateList.clear();
+            topKHeap.clear();
+            boolean useHeap = false;
+
             ClientDecorationRegion region = world.getRegion(0, 0);
             assertNotNull(region);
 
-            for (DecorationRenderCell cell : region.getNonEmptyCells()) {
+            for (DecorationRenderCell cell : region.getCells()) {
+                if (cell.isEmpty()) continue;
                 AABB cellBox = cell.getBounds();
 
                 // Coarse cell distance check
                 double cellDistSq = metrics.getDistanceSq(cellBox);
                 if (cellDistSq > 1024.0 * 1024.0) continue;
 
-                for (DecorationRecord record : cell.getRecords()) {
-                    double distSq = metrics.getDistanceSq(record.bounds());
+                for (ClientDecoration deco : cell.getDecorations()) {
+                    double distSq = metrics.getDistanceSq(deco.bounds());
                     if (distSq > budget.getMaxRenderDistance() * budget.getMaxRenderDistance()) continue;
 
-                    double pixelSize = metrics.calculateProjectedPixelSize(record.bounds());
+                    double pixelSize = metrics.calculateProjectedPixelSize(deco.bounds());
                     if (pixelSize < budget.getMinProjectedPixelSize()) continue;
 
                     double score = budget.calculatePriority(pixelSize, distSq);
-                    frameCandidates.add(new RenderBudget.RenderCandidate(record, pixelSize, distSq, score));
+                    RenderBudget.RenderCandidate candidate = new RenderBudget.RenderCandidate(deco, pixelSize, distSq, score);
+
+                    if (!useHeap) {
+                        if (candidateList.size() < maxSubmissions) {
+                            candidateList.add(candidate);
+                        } else {
+                            useHeap = true;
+                            topKHeap.addAll(candidateList);
+                            candidateList.clear();
+                            if (score > topKHeap.peek().priorityScore()) {
+                                topKHeap.poll();
+                                topKHeap.add(candidate);
+                            }
+                        }
+                    } else {
+                        if (score > topKHeap.peek().priorityScore()) {
+                            topKHeap.poll();
+                            topKHeap.add(candidate);
+                        }
+                    }
                 }
             }
 
-            frameCandidates.sort(RenderBudget.PRIORITY_COMPARATOR);
-            if (frameCandidates.size() > budget.getMaxSubmissionsPerFrame()) {
-                frameCandidates = frameCandidates.subList(0, budget.getMaxSubmissionsPerFrame());
+            if (useHeap) {
+                candidateList.addAll(topKHeap);
             }
+            candidateList.sort(RenderBudget.PRIORITY_COMPARATOR);
 
-            totalRenderCandidates += frameCandidates.size();
+            totalRenderCandidates += candidateList.size();
         }
 
         long totalQueryTimeMs = (System.nanoTime() - startQuery) / 1_000_000;
         double avgFrameTimeMs = (double) totalQueryTimeMs / frames;
 
         System.out.println(String.format(
-            "=== Scale Benchmark Results ===\n" +
+            "=== Spatial Indexing & Top-K Microbenchmark Results ===\n" +
             "Total Decorations: %d\n" +
             "Ingest Time: %d ms\n" +
-            "100 Frames Query Time: %d ms (Avg: %.2f ms / frame)\n" +
-            "Candidates per frame: %d\n",
+            "100 Frames Traversal & Top-K Time: %d ms (Avg: %.2f ms / frame)\n" +
+            "Selected Candidates per frame: %d\n",
             TOTAL_DECORATIONS, ingestTimeMs, totalQueryTimeMs, avgFrameTimeMs, totalRenderCandidates / frames
         ));
 
-        // Average frame query latency for 50,000 decorations should be under 15ms
-        assertTrue(avgFrameTimeMs < 15.0, "Average query latency too high: " + avgFrameTimeMs + " ms");
+        // Average frame query latency for 50,000 decorations should be well under 10ms
+        assertTrue(avgFrameTimeMs < 10.0, "Average query latency too high: " + avgFrameTimeMs + " ms");
     }
 
     @Test
@@ -145,3 +174,4 @@ public class ScaleBenchmarkTest {
         assertTrue(lookupTimeUs < 50_000, "Chunk lookups took too long: " + lookupTimeUs + " µs");
     }
 }
+

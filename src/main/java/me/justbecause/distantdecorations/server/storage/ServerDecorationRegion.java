@@ -4,6 +4,7 @@ import me.justbecause.distantdecorations.api.DecorationId;
 import me.justbecause.distantdecorations.api.DecorationRecord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.ChunkPos;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -21,6 +22,7 @@ public final class ServerDecorationRegion {
     private final Map<Long, Set<DecorationId>> chunkToDecorations = new ConcurrentHashMap<>();
     private volatile long revision = 0L;
     private volatile boolean dirty = false;
+    private volatile long lastAccessTime = System.currentTimeMillis();
 
     public ServerDecorationRegion(int regionX, int regionZ) {
         this.regionX = regionX;
@@ -43,12 +45,27 @@ public final class ServerDecorationRegion {
         this.revision = revision;
     }
 
+    public long incrementRevision() {
+        this.revision++;
+        this.dirty = true;
+        this.lastAccessTime = System.currentTimeMillis();
+        return this.revision;
+    }
+
     public boolean isDirty() {
         return dirty;
     }
 
     public void markClean() {
         this.dirty = false;
+    }
+
+    public long getLastAccessTime() {
+        return lastAccessTime;
+    }
+
+    public void touch() {
+        this.lastAccessTime = System.currentTimeMillis();
     }
 
     public int size() {
@@ -60,21 +77,29 @@ public final class ServerDecorationRegion {
     }
 
     public Collection<DecorationRecord> getAllRecords() {
+        touch();
         return Collections.unmodifiableCollection(records.values());
     }
 
+    @Nullable
+    public DecorationRecord getRecord(DecorationId id) {
+        touch();
+        return records.get(id);
+    }
+
     public DecorationRecord addOrUpdate(DecorationRecord record) {
+        touch();
         DecorationRecord previous = records.put(record.id(), record);
         BlockPos pos = record.id().anchor();
         long chunkKey = ChunkPos.pack(pos.getX() >> 4, pos.getZ() >> 4);
         chunkToDecorations.computeIfAbsent(chunkKey, k -> ConcurrentHashMap.newKeySet()).add(record.id());
 
-        this.revision++;
         this.dirty = true;
         return record;
     }
 
     public DecorationRecord remove(DecorationId id) {
+        touch();
         DecorationRecord removed = records.remove(id);
         if (removed != null) {
             BlockPos pos = id.anchor();
@@ -86,13 +111,13 @@ public final class ServerDecorationRegion {
                     chunkToDecorations.remove(chunkKey);
                 }
             }
-            this.revision++;
             this.dirty = true;
         }
         return removed;
     }
 
     public List<DecorationRecord> getDecorationsInChunk(int chunkX, int chunkZ) {
+        touch();
         long chunkKey = ChunkPos.pack(chunkX, chunkZ);
         Set<DecorationId> ids = chunkToDecorations.get(chunkKey);
         if (ids == null || ids.isEmpty()) {
@@ -146,6 +171,8 @@ public final class ServerDecorationRegion {
         }
 
         region.dirty = false;
+        region.lastAccessTime = System.currentTimeMillis();
         return region;
     }
 }
+

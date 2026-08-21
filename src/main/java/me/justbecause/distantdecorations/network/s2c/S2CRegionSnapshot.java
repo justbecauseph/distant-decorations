@@ -13,6 +13,8 @@ public record S2CRegionSnapshot(
     int regionX,
     int regionZ,
     long revision,
+    int partIndex,
+    int partCount,
     List<DecorationRecord> records
 ) implements CustomPacketPayload {
     public static final Type<S2CRegionSnapshot> TYPE = new Type<>(DistantDecorations.id("region_snapshot"));
@@ -22,6 +24,8 @@ public record S2CRegionSnapshot(
             buf.writeVarInt(packet.regionX);
             buf.writeVarInt(packet.regionZ);
             buf.writeVarLong(packet.revision);
+            buf.writeVarInt(packet.partIndex);
+            buf.writeVarInt(packet.partCount);
             buf.writeVarInt(packet.records.size());
             for (DecorationRecord record : packet.records) {
                 record.writeToNetwork(buf);
@@ -31,12 +35,14 @@ public record S2CRegionSnapshot(
             int rx = buf.readVarInt();
             int rz = buf.readVarInt();
             long rev = buf.readVarLong();
+            int partIndex = buf.readVarInt();
+            int partCount = buf.readVarInt();
             int count = buf.readVarInt();
             List<DecorationRecord> records = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
                 records.add(DecorationRecord.readFromNetwork(buf));
             }
-            return new S2CRegionSnapshot(rx, rz, rev, records);
+            return new S2CRegionSnapshot(rx, rz, rev, partIndex, partCount, records);
         }
     );
 

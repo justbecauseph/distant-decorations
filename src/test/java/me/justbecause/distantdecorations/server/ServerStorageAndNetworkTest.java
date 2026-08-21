@@ -102,7 +102,7 @@ public class ServerStorageAndNetworkTest {
         DecorationId id = new DecorationId(type, dim, new BlockPos(100, 64, 200));
         DecorationRecord record = new DecorationRecord(id, new AABB(100, 64, 200, 102, 66, 200.1), 5L, new byte[]{9, 8, 7});
 
-        S2CRegionSnapshot snapshot = new S2CRegionSnapshot(1, 2, 5L, List.of(record));
+        S2CRegionSnapshot snapshot = new S2CRegionSnapshot(1, 2, 5L, 0, 1, List.of(record));
 
         RegistryFriendlyByteBuf buf = new RegistryFriendlyByteBuf(Unpooled.buffer(), null);
         S2CRegionSnapshot.CODEC.encode(buf, snapshot);
@@ -113,6 +113,8 @@ public class ServerStorageAndNetworkTest {
         assertEquals(snapshot.regionX(), decoded.regionX());
         assertEquals(snapshot.regionZ(), decoded.regionZ());
         assertEquals(snapshot.revision(), decoded.revision());
+        assertEquals(snapshot.partIndex(), decoded.partIndex());
+        assertEquals(snapshot.partCount(), decoded.partCount());
         assertEquals(snapshot.records(), decoded.records());
     }
 

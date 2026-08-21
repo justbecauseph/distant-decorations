@@ -31,13 +31,8 @@ public final class TelemetryMetrics {
     public static final AtomicLong CLIENT_TOTAL_RENDERED = new AtomicLong();
 
     // --- Provider Metrics ---
-    public static final AtomicLong FAST_PAINTINGS_FAR_RENDERS = new AtomicLong();
-    public static final AtomicLong FAST_PAINTINGS_SIMPLIFIED_RENDERS = new AtomicLong();
-    public static final AtomicLong CAMERAPTURE_THUMBNAIL_RENDERS = new AtomicLong();
-    public static final AtomicLong CAMERAPTURE_THUMBNAIL_REQUESTS = new AtomicLong();
-    public static final AtomicLong CAMERAPTURE_CACHE_HITS = new AtomicLong();
-    public static final AtomicLong CAMERAPTURE_TEXTURE_UPLOADS = new AtomicLong();
-    public static final AtomicLong CAMERAPTURE_UPLOAD_BYTES = new AtomicLong();
+    public static final AtomicLong PROVIDER_CUSTOM_RENDERS = new AtomicLong();
+    public static final AtomicLong PROVIDER_CACHE_HITS = new AtomicLong();
 
     public static void beginClientFrame() {
         clientCellsChecked = 0;
@@ -66,13 +61,8 @@ public final class TelemetryMetrics {
         CLIENT_SYNCED_REGIONS.set(0);
         CLIENT_TOTAL_RENDERED.set(0);
 
-        FAST_PAINTINGS_FAR_RENDERS.set(0);
-        FAST_PAINTINGS_SIMPLIFIED_RENDERS.set(0);
-        CAMERAPTURE_THUMBNAIL_RENDERS.set(0);
-        CAMERAPTURE_THUMBNAIL_REQUESTS.set(0);
-        CAMERAPTURE_CACHE_HITS.set(0);
-        CAMERAPTURE_TEXTURE_UPLOADS.set(0);
-        CAMERAPTURE_UPLOAD_BYTES.set(0);
+        PROVIDER_CUSTOM_RENDERS.set(0);
+        PROVIDER_CACHE_HITS.set(0);
 
         beginClientFrame();
     }

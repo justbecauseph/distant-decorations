@@ -15,7 +15,7 @@ public final class DecorationRenderCell {
 
     private final int cellX;
     private final int cellZ;
-    private final Map<DecorationId, DecorationRecord> records = new ConcurrentHashMap<>();
+    private final Map<DecorationId, ClientDecoration> decorations = new ConcurrentHashMap<>();
     private volatile AABB cellBounds;
 
     public DecorationRenderCell(int cellX, int cellZ) {
@@ -36,31 +36,36 @@ public final class DecorationRenderCell {
         return cellBounds;
     }
 
-    public Collection<DecorationRecord> getRecords() {
-        return Collections.unmodifiableCollection(records.values());
+    public Collection<ClientDecoration> getDecorations() {
+        return Collections.unmodifiableCollection(decorations.values());
     }
 
     public boolean isEmpty() {
-        return records.isEmpty();
+        return decorations.isEmpty();
     }
 
     public int size() {
-        return records.size();
+        return decorations.size();
     }
 
     public void addOrUpdate(DecorationRecord record) {
-        records.put(record.id(), record);
+        decorations.put(record.id(), new ClientDecoration(record));
+        recalculateBounds();
+    }
+
+    public void addOrUpdate(ClientDecoration decoration) {
+        decorations.put(decoration.id(), decoration);
         recalculateBounds();
     }
 
     public void remove(DecorationId id) {
-        if (records.remove(id) != null) {
+        if (decorations.remove(id) != null) {
             recalculateBounds();
         }
     }
 
     public void clear() {
-        records.clear();
+        decorations.clear();
         this.cellBounds = calculateDefaultBounds();
     }
 
@@ -73,7 +78,7 @@ public final class DecorationRenderCell {
     }
 
     private void recalculateBounds() {
-        if (records.isEmpty()) {
+        if (decorations.isEmpty()) {
             this.cellBounds = calculateDefaultBounds();
             return;
         }
@@ -85,8 +90,8 @@ public final class DecorationRenderCell {
         double maxY = Double.NEGATIVE_INFINITY;
         double maxZ = Double.NEGATIVE_INFINITY;
 
-        for (DecorationRecord record : records.values()) {
-            AABB b = record.bounds();
+        for (ClientDecoration deco : decorations.values()) {
+            AABB b = deco.bounds();
             if (b.minX < minX) minX = b.minX;
             if (b.minY < minY) minY = b.minY;
             if (b.minZ < minZ) minZ = b.minZ;
@@ -98,3 +103,4 @@ public final class DecorationRenderCell {
         this.cellBounds = new AABB(minX, minY, minZ, maxX, maxY, maxZ);
     }
 }
+

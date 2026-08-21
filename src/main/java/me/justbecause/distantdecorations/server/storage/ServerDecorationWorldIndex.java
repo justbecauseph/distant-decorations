@@ -21,15 +21,15 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 public final class ServerDecorationWorldIndex {
     public static final int CHUNKS_PER_REGION_AXIS = 32;
+    public static final long RESIDENCY_TIMEOUT_MS = 60_000L; // 60 seconds
+    public static final int MAX_DIRTY_FLUSH_PER_CYCLE = 10;
 
     private final ServerLevel level;
     private final Path storageDir;
     private final Map<Long, ServerDecorationRegion> loadedRegions = new ConcurrentHashMap<>();
-    private final AtomicLong globalRevisionCounter = new AtomicLong();
 
     public ServerDecorationWorldIndex(ServerLevel level, Path storageDir) {
         this.level = level;
@@ -102,10 +102,6 @@ public final class ServerDecorationWorldIndex {
 
         AABB bounds = provider.calculateBounds(level, pos, data);
         byte[] payload = provider.type().toBytes(data);
-        long revision = globalRevisionCounter.incrementAndGet();
-
-        DecorationId id = new DecorationId(provider.type().id(), level.dimension(), pos);
-        DecorationRecord record = new DecorationRecord(id, bounds, revision, payload);
 
         int chunkX = pos.getX() >> 4;
         int chunkZ = pos.getZ() >> 4;
@@ -113,6 +109,16 @@ public final class ServerDecorationWorldIndex {
         int rz = chunkToRegionCoord(chunkZ);
 
         ServerDecorationRegion region = getOrCreateRegion(rx, rz);
+        DecorationId id = new DecorationId(provider.type().id(), level.dimension(), pos);
+
+        // Change detection: If unchanged, NO-OP!
+        DecorationRecord existing = region.getRecord(id);
+        if (existing != null && existing.bounds().equals(bounds) && Arrays.equals(existing.payload(), payload)) {
+            return existing;
+        }
+
+        long revision = region.incrementRevision();
+        DecorationRecord record = new DecorationRecord(id, bounds, revision, payload);
         region.addOrUpdate(record);
 
         TelemetryMetrics.SERVER_ADDS.incrementAndGet();
@@ -147,6 +153,7 @@ public final class ServerDecorationWorldIndex {
             return false;
         }
 
+        region.incrementRevision();
         for (DecorationId id : toRemove) {
             region.remove(id);
             TelemetryMetrics.SERVER_REMOVES.incrementAndGet();
@@ -183,15 +190,47 @@ public final class ServerDecorationWorldIndex {
         List<DecorationId> removed = new ArrayList<>();
         for (DecorationRecord existing : existingInChunk) {
             if (!presentSupportedPositions.contains(existing.id().anchor())) {
-                region.remove(existing.id());
                 removed.add(existing.id());
-                TelemetryMetrics.SERVER_REMOVES.incrementAndGet();
             }
         }
 
         if (!removed.isEmpty()) {
+            region.incrementRevision();
+            for (DecorationId id : removed) {
+                region.remove(id);
+                TelemetryMetrics.SERVER_REMOVES.incrementAndGet();
+            }
             TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(getTotalIndexedDecorations());
             ServerNetworkManager.getInstance().broadcastDelta(level.dimension(), rx, rz, region.revision(), Collections.emptyList(), removed);
+        }
+    }
+
+    public void tick(Set<Long> activeSubscribedRegions) {
+        long now = System.currentTimeMillis();
+        int flushedCount = 0;
+
+        Iterator<Map.Entry<Long, ServerDecorationRegion>> iterator = loadedRegions.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<Long, ServerDecorationRegion> entry = iterator.next();
+            long key = entry.getKey();
+            ServerDecorationRegion region = entry.getValue();
+
+            // 1. Periodic dirty flushing
+            if (region.isDirty() && flushedCount < MAX_DIRTY_FLUSH_PER_CYCLE) {
+                saveRegionToFile(region);
+                flushedCount++;
+            }
+
+            // 2. Region residency eviction
+            boolean isSubscribed = activeSubscribedRegions.contains(key);
+            if (!isSubscribed && (now - region.getLastAccessTime()) > RESIDENCY_TIMEOUT_MS) {
+                if (region.isDirty()) {
+                    saveRegionToFile(region);
+                }
+                iterator.remove();
+                TelemetryMetrics.SERVER_REGIONS.decrementAndGet();
+                TelemetryMetrics.SERVER_INDEXED_DECORATIONS.addAndGet(-region.size());
+            }
         }
     }
 
@@ -249,3 +288,4 @@ public final class ServerDecorationWorldIndex {
         loadedRegions.clear();
     }
 }
+

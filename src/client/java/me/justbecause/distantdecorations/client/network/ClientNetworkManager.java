@@ -38,7 +38,7 @@ public final class ClientNetworkManager {
             ClientLevel level = context.client().level;
             if (level != null) {
                 ClientDecorationWorld world = DecorationRenderManager.getInstance().getOrCreateWorld(level.dimension());
-                world.putSnapshot(payload.regionX(), payload.regionZ(), payload.revision(), payload.records());
+                world.putSnapshotPart(payload.regionX(), payload.regionZ(), payload.revision(), payload.partIndex(), payload.partCount(), payload.records());
                 TelemetryMetrics.CLIENT_SYNCED_REGIONS.set(world.getAllRegions().size());
                 TelemetryMetrics.CLIENT_SYNCED_DECORATIONS.set(world.getTotalDecorationsCount());
             }

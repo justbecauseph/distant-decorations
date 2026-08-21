@@ -18,14 +18,17 @@ import net.minecraft.world.level.Level;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 public final class ServerNetworkManager {
     private static final ServerNetworkManager INSTANCE = new ServerNetworkManager();
 
     public static final int PROTOCOL_VERSION = 1;
+    public static final int MIN_RADIUS_CHUNKS = 16;
     public static final int DEFAULT_MAX_RADIUS_CHUNKS = 128; // 4 regions
-    public static final int MAX_SNAPSHOTS_PER_TICK = 2;
+    public static final int ABSOLUTE_MAX_RADIUS_CHUNKS = 256;
     public static final int MAX_RECORDS_PER_SNAPSHOT = 500;
+    public static final int DEFAULT_MAX_BYTES_PER_TICK = 131072; // 128 KiB per tick per player
 
     private static final class PlayerSubscription {
         final ServerPlayer player;
@@ -33,8 +36,7 @@ public final class ServerNetworkManager {
         int centerChunkZ;
         int radiusChunks = 64;
         final Set<Long> activeRegions = ConcurrentHashMap.newKeySet();
-        final List<Long> pendingSnapshotQueue = Collections.synchronizedList(new ArrayList<>());
-        int snapshotsSentThisTick = 0;
+        final Queue<S2CRegionSnapshot> pendingSnapshotPackets = new ConcurrentLinkedQueue<>();
 
         PlayerSubscription(ServerPlayer player) {
             this.player = player;
@@ -61,14 +63,19 @@ public final class ServerNetworkManager {
 
     public void handleClientHello(ServerPlayer player, C2SClientHello hello) {
         PlayerSubscription sub = subscriptions.computeIfAbsent(player.getUUID(), k -> new PlayerSubscription(player));
-        sub.radiusChunks = Math.min(hello.requestedRadiusChunks(), DEFAULT_MAX_RADIUS_CHUNKS);
+        int requested = hello.requestedRadiusChunks();
+        sub.radiusChunks = Math.max(MIN_RADIUS_CHUNKS, Math.min(requested, ABSOLUTE_MAX_RADIUS_CHUNKS));
         updateSubscriptions(player, player.getBlockX() >> 4, player.getBlockZ() >> 4, sub.radiusChunks);
     }
 
     public void handleSubscriptionUpdate(ServerPlayer player, C2SSubscriptionUpdate update) {
         PlayerSubscription sub = subscriptions.computeIfAbsent(player.getUUID(), k -> new PlayerSubscription(player));
-        sub.radiusChunks = Math.min(update.requestedRadiusChunks(), DEFAULT_MAX_RADIUS_CHUNKS);
-        updateSubscriptions(player, update.centerChunkX(), update.centerChunkZ(), sub.radiusChunks);
+        int requested = update.requestedRadiusChunks();
+        sub.radiusChunks = Math.max(MIN_RADIUS_CHUNKS, Math.min(requested, ABSOLUTE_MAX_RADIUS_CHUNKS));
+        // Server is strictly authoritative for player location
+        int authorativeChunkX = player.getBlockX() >> 4;
+        int authorativeChunkZ = player.getBlockZ() >> 4;
+        updateSubscriptions(player, authorativeChunkX, authorativeChunkZ, sub.radiusChunks);
     }
 
     public void updateSubscriptions(ServerPlayer player, int centerChunkX, int centerChunkZ, int radiusChunks) {
@@ -121,53 +128,79 @@ public final class ServerNetworkManager {
             return dx * dx + dz * dz;
         }));
 
-        synchronized (sub.pendingSnapshotQueue) {
-            sub.pendingSnapshotQueue.clear();
-            sub.pendingSnapshotQueue.addAll(newRegionsToStream);
+        ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex((ServerLevel) player.level());
+        if (index == null) {
+            return;
+        }
+
+        sub.pendingSnapshotPackets.clear();
+        for (long key : newRegionsToStream) {
+            int rx = (int) (key >> 32);
+            int rz = (int) key;
+            ServerDecorationRegion region = index.getOrCreateRegion(rx, rz);
+            sub.activeRegions.add(key);
+
+            List<DecorationRecord> records = new ArrayList<>(region.getAllRecords());
+            if (records.isEmpty()) {
+                sub.pendingSnapshotPackets.add(new S2CRegionSnapshot(rx, rz, region.revision(), 0, 1, Collections.emptyList()));
+            } else {
+                int partCount = (records.size() + MAX_RECORDS_PER_SNAPSHOT - 1) / MAX_RECORDS_PER_SNAPSHOT;
+                for (int p = 0; p < partCount; p++) {
+                    int start = p * MAX_RECORDS_PER_SNAPSHOT;
+                    int end = Math.min(records.size(), start + MAX_RECORDS_PER_SNAPSHOT);
+                    List<DecorationRecord> partRecords = new ArrayList<>(records.subList(start, end));
+                    sub.pendingSnapshotPackets.add(new S2CRegionSnapshot(rx, rz, region.revision(), p, partCount, partRecords));
+                }
+            }
         }
     }
 
     public void tick(ServerLevel level) {
+        ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
+        if (index == null) {
+            return;
+        }
+
+        Set<Long> allActiveRegionsInLevel = new HashSet<>();
+        for (PlayerSubscription sub : subscriptions.values()) {
+            if (sub.player.level() == level) {
+                allActiveRegionsInLevel.addAll(sub.activeRegions);
+            }
+        }
+
+        // Run index tick for dirty region flushing and eviction
+        index.tick(allActiveRegionsInLevel);
+
+        // Process byte-budgeted snapshot streaming for players in this level
         for (PlayerSubscription sub : subscriptions.values()) {
             if (sub.player.level() != level || !sub.player.isAlive()) {
                 continue;
             }
 
-            sub.snapshotsSentThisTick = 0;
-            ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
-            if (index == null) {
-                continue;
-            }
+            int bytesSentThisTick = 0;
+            while (!sub.pendingSnapshotPackets.isEmpty() && bytesSentThisTick < DEFAULT_MAX_BYTES_PER_TICK) {
+                S2CRegionSnapshot packet = sub.pendingSnapshotPackets.poll();
+                if (packet == null) {
+                    break;
+                }
 
-            synchronized (sub.pendingSnapshotQueue) {
-                while (!sub.pendingSnapshotQueue.isEmpty() && sub.snapshotsSentThisTick < MAX_SNAPSHOTS_PER_TICK) {
-                    long key = sub.pendingSnapshotQueue.remove(0);
-                    int rx = (int) (key >> 32);
-                    int rz = (int) key;
-
-                    ServerDecorationRegion region = index.getOrCreateRegion(rx, rz);
-                    sub.activeRegions.add(key);
-
-                    List<DecorationRecord> records = new ArrayList<>(region.getAllRecords());
-                    // If records exceed MAX_RECORDS_PER_SNAPSHOT, chunk them
-                    if (records.size() <= MAX_RECORDS_PER_SNAPSHOT) {
-                        if (ServerPlayNetworking.canSend(sub.player, S2CRegionSnapshot.TYPE)) {
-                            ServerPlayNetworking.send(sub.player, new S2CRegionSnapshot(rx, rz, region.revision(), records));
-                        }
-                    } else {
-                        for (int i = 0; i < records.size(); i += MAX_RECORDS_PER_SNAPSHOT) {
-                            List<DecorationRecord> chunkRecords = records.subList(i, Math.min(records.size(), i + MAX_RECORDS_PER_SNAPSHOT));
-                            if (ServerPlayNetworking.canSend(sub.player, S2CRegionSnapshot.TYPE)) {
-                                ServerPlayNetworking.send(sub.player, new S2CRegionSnapshot(rx, rz, region.revision(), chunkRecords));
-                            }
-                        }
-                    }
-
-                    sub.snapshotsSentThisTick++;
+                int estimatedBytes = estimatePacketBytes(packet);
+                if (ServerPlayNetworking.canSend(sub.player, S2CRegionSnapshot.TYPE)) {
+                    ServerPlayNetworking.send(sub.player, packet);
                     TelemetryMetrics.SERVER_SNAPSHOTS_SENT.incrementAndGet();
+                    TelemetryMetrics.SERVER_METADATA_BYTES_SENT.addAndGet(estimatedBytes);
+                    bytesSentThisTick += estimatedBytes;
                 }
             }
         }
+    }
+
+    private static int estimatePacketBytes(S2CRegionSnapshot packet) {
+        int bytes = 32; // base header (rx, rz, revision, partIndex, partCount, list size)
+        for (DecorationRecord r : packet.records()) {
+            bytes += 64 + r.payload().length; // id, coordinates, 6 doubles (48 bytes), revision, payload length + array
+        }
+        return bytes;
     }
 
     public void broadcastDelta(ResourceKey<Level> dim, int regionX, int regionZ, long revision, List<DecorationRecord> additions, List<DecorationId> removals) {
@@ -184,3 +217,4 @@ public final class ServerNetworkManager {
         }
     }
 }
+

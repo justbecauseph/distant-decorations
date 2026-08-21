@@ -15,6 +15,26 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ClientDecorationWorld {
     private final ResourceKey<Level> dimension;
     private final Map<Long, ClientDecorationRegion> regions = new ConcurrentHashMap<>();
+    private final Map<Long, PendingSnapshot> pendingSnapshots = new ConcurrentHashMap<>();
+
+    private static final class PendingSnapshot {
+        final int regionX;
+        final int regionZ;
+        final long revision;
+        final int partCount;
+        final Map<Integer, List<DecorationRecord>> parts = new ConcurrentHashMap<>();
+
+        PendingSnapshot(int regionX, int regionZ, long revision, int partCount) {
+            this.regionX = regionX;
+            this.regionZ = regionZ;
+            this.revision = revision;
+            this.partCount = partCount;
+        }
+
+        boolean isComplete() {
+            return parts.size() == partCount;
+        }
+    }
 
     public ClientDecorationWorld(ResourceKey<Level> dimension) {
         this.dimension = dimension;
@@ -37,12 +57,51 @@ public final class ClientDecorationWorld {
         return regions.computeIfAbsent(packRegionKey(regionX, regionZ), k -> new ClientDecorationRegion(regionX, regionZ, revision));
     }
 
-    public void putSnapshot(int regionX, int regionZ, long revision, List<DecorationRecord> records) {
-        ClientDecorationRegion region = new ClientDecorationRegion(regionX, regionZ, revision);
-        for (DecorationRecord record : records) {
-            region.addOrUpdate(record);
+    public void putSnapshotPart(int regionX, int regionZ, long revision, int partIndex, int partCount, List<DecorationRecord> records) {
+        long key = packRegionKey(regionX, regionZ);
+        ClientDecorationRegion currentRegion = regions.get(key);
+        if (currentRegion != null && currentRegion.revision() > revision) {
+            // Outdated snapshot, ignore
+            return;
         }
-        regions.put(packRegionKey(regionX, regionZ), region);
+
+        if (partCount <= 1) {
+            ClientDecorationRegion region = new ClientDecorationRegion(regionX, regionZ, revision);
+            for (DecorationRecord record : records) {
+                region.addOrUpdate(record);
+            }
+            regions.put(key, region);
+            pendingSnapshots.remove(key);
+            return;
+        }
+
+        PendingSnapshot pending = pendingSnapshots.compute(key, (k, existing) -> {
+            if (existing == null || existing.revision < revision) {
+                existing = new PendingSnapshot(regionX, regionZ, revision, partCount);
+            }
+            if (existing.revision == revision) {
+                existing.parts.put(partIndex, records);
+            }
+            return existing;
+        });
+
+        if (pending != null && pending.isComplete()) {
+            ClientDecorationRegion region = new ClientDecorationRegion(regionX, regionZ, revision);
+            for (int i = 0; i < pending.partCount; i++) {
+                List<DecorationRecord> partRecords = pending.parts.get(i);
+                if (partRecords != null) {
+                    for (DecorationRecord record : partRecords) {
+                        region.addOrUpdate(record);
+                    }
+                }
+            }
+            regions.put(key, region);
+            pendingSnapshots.remove(key);
+        }
+    }
+
+    public void putSnapshot(int regionX, int regionZ, long revision, List<DecorationRecord> records) {
+        putSnapshotPart(regionX, regionZ, revision, 0, 1, records);
     }
 
     public void applyDelta(int regionX, int regionZ, long revision, List<DecorationRecord> additions, List<DecorationId> removals) {
@@ -57,11 +116,14 @@ public final class ClientDecorationWorld {
     }
 
     public void unloadRegion(int regionX, int regionZ) {
-        regions.remove(packRegionKey(regionX, regionZ));
+        long key = packRegionKey(regionX, regionZ);
+        regions.remove(key);
+        pendingSnapshots.remove(key);
     }
 
     public void clear() {
         regions.clear();
+        pendingSnapshots.clear();
     }
 
     public Collection<ClientDecorationRegion> getAllRegions() {
@@ -76,3 +138,4 @@ public final class ClientDecorationWorld {
         return total;
     }
 }
+
