@@ -4,6 +4,7 @@ bin/
 run/
 logs/
 out/
+libs/
 .idea
 *.iml
 *.ipr
