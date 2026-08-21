@@ -8,8 +8,6 @@ import java.util.Comparator;
 
 public final class RenderBudget {
     private int maxSubmissionsPerFrame = 2000;
-    private double minProjectedPixelSize = DistantDecorationsConfig.getMinProjectedPixelSize();
-    private double maxRenderDistance = DistantDecorationsConfig.getMaxRenderDistance();
 
     public record RenderCandidate(
         ClientDecoration decoration,
@@ -34,19 +32,19 @@ public final class RenderBudget {
     }
 
     public double getMinProjectedPixelSize() {
-        return minProjectedPixelSize;
+        return DistantDecorationsConfig.getMinProjectedPixelSize();
     }
 
     public void setMinProjectedPixelSize(double minProjectedPixelSize) {
-        this.minProjectedPixelSize = Math.max(0.05, minProjectedPixelSize);
+        DistantDecorationsConfig.setMinProjectedPixelSize(minProjectedPixelSize);
     }
 
     public double getMaxRenderDistance() {
-        return maxRenderDistance;
+        return DistantDecorationsConfig.getMaxRenderDistance();
     }
 
     public void setMaxRenderDistance(double maxRenderDistance) {
-        this.maxRenderDistance = Math.max(16.0, maxRenderDistance);
+        DistantDecorationsConfig.setMaxRenderDistance(maxRenderDistance);
     }
 
     public double calculatePriority(double projectedPixelSize, double distanceSq) {

@@ -7,7 +7,7 @@ public final class DistantDecorationsConfig {
     private static volatile boolean masterEnabled = !Boolean.getBoolean("distantdecorations.disabled");
     private static volatile boolean benchmarkMode = Boolean.getBoolean("distantdecorations.benchmark_mode");
     private static volatile int clientSubscriptionRadiusChunks = Integer.getInteger("distantdecorations.subscription_radius_chunks", 512);
-    private static volatile double minProjectedPixelSize = Double.parseDouble(System.getProperty("distantdecorations.min_projected_pixel_size", "0.25"));
+    private static volatile double minProjectedPixelSize = Double.parseDouble(System.getProperty("distantdecorations.min_projected_pixel_size", "0.10"));
     private static volatile double maxRenderDistance = Double.parseDouble(System.getProperty("distantdecorations.max_render_distance", String.valueOf(clientSubscriptionRadiusChunks * 16.0)));
 
     private DistantDecorationsConfig() {}
@@ -42,7 +42,7 @@ public final class DistantDecorationsConfig {
     }
 
     public static void setMinProjectedPixelSize(double pixelSize) {
-        minProjectedPixelSize = Math.max(0.05, pixelSize);
+        minProjectedPixelSize = Math.max(0.01, pixelSize);
     }
 
     public static double getMaxRenderDistance() {
