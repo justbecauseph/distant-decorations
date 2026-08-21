@@ -94,3 +94,12 @@ jar {
 	def projectName = project.name
 	inputs.property "projectName", projectName
 }
+
+publishing {
+	publications {
+		mavenJava(MavenPublication) {
+			from components.java
+		}
+	}
+}
+
