@@ -27,6 +27,8 @@ public final class ClientNetworkManager {
     private int lastChunkX = Integer.MIN_VALUE;
     private int lastChunkZ = Integer.MIN_VALUE;
 
+    private boolean helloSent = false;
+
     private ClientNetworkManager() {}
 
     public static ClientNetworkManager getInstance() {
@@ -68,11 +70,13 @@ public final class ClientNetworkManager {
 
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             DecorationRenderManager.getInstance().clearAll();
+            helloSent = false;
             sendClientHello();
         });
 
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             DecorationRenderManager.getInstance().clearAll();
+            helloSent = false;
             lastChunkX = Integer.MIN_VALUE;
             lastChunkZ = Integer.MIN_VALUE;
         });
@@ -87,6 +91,10 @@ public final class ClientNetworkManager {
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player != null && client.level != null) {
+                if (!helloSent) {
+                    sendClientHello();
+                }
+
                 int cx = client.player.getBlockX() >> 4;
                 int cz = client.player.getBlockZ() >> 4;
                 if (Math.abs(cx - lastChunkX) >= 8 || Math.abs(cz - lastChunkZ) >= 8) {
@@ -108,6 +116,7 @@ public final class ClientNetworkManager {
         }
         int radiusChunks = Minecraft.getInstance().options.renderDistance().get() * 4; // request up to 4x render distance
         ClientPlayNetworking.send(new C2SClientHello(ServerNetworkManager.PROTOCOL_VERSION, types, radiusChunks));
+        helloSent = true;
     }
 
     public void sendSubscriptionUpdate(int centerChunkX, int centerChunkZ) {

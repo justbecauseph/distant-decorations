@@ -1,5 +1,6 @@
 package me.justbecause.distantdecorations.api;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.world.phys.AABB;
 
@@ -24,6 +25,10 @@ public record DecorationRecord(
         if (payload.length > MAX_PAYLOAD_BYTES) {
             throw new IllegalArgumentException("Payload size " + payload.length + " exceeds maximum allowed " + MAX_PAYLOAD_BYTES + " bytes");
         }
+    }
+
+    public BlockPos pos() {
+        return id.anchor();
     }
 
     public void writeToNetwork(FriendlyByteBuf buf) {

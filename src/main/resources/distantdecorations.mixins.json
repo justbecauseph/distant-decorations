@@ -5,6 +5,7 @@
   "plugin": "me.justbecause.distantdecorations.mixin.DistantDecorationsMixinPlugin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
+    "MixinLevelChunk",
     "chunky.MixinFabricWorld"
   ],
   "client": [
