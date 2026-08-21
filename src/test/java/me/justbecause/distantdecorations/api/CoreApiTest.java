@@ -104,7 +104,10 @@ public class CoreApiTest {
         DecorationId id = new DecorationId(type, dim, pos);
         AABB bounds = new AABB(0, 64, 0, 1, 65, 0.1);
 
-        // 1. Instantiation rejection
+        // 1. Exact boundary instantiation: MAX_PAYLOAD_BYTES must succeed, MAX_PAYLOAD_BYTES + 1 must fail
+        byte[] maxValidPayload = new byte[DecorationRecord.MAX_PAYLOAD_BYTES];
+        assertDoesNotThrow(() -> new DecorationRecord(id, bounds, 1L, maxValidPayload));
+
         byte[] oversizedPayload = new byte[DecorationRecord.MAX_PAYLOAD_BYTES + 1];
         assertThrows(IllegalArgumentException.class, () -> new DecorationRecord(id, bounds, 1L, oversizedPayload));
 
@@ -128,5 +131,21 @@ public class CoreApiTest {
 
         DataInputStream dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
         assertThrows(java.io.IOException.class, () -> DecorationRecord.readFromStream(dis));
+
+        // 3. Network buffer deserialization defense (buffer declaring MAX + 1 bytes)
+        FriendlyByteBuf netBuf = new FriendlyByteBuf(Unpooled.buffer());
+        id.writeToNetwork(netBuf);
+        netBuf.writeDouble(bounds.minX);
+        netBuf.writeDouble(bounds.minY);
+        netBuf.writeDouble(bounds.minZ);
+        netBuf.writeDouble(bounds.maxX);
+        netBuf.writeDouble(bounds.maxY);
+        netBuf.writeDouble(bounds.maxZ);
+        netBuf.writeVarLong(1L);
+        netBuf.writeVarInt(DecorationRecord.MAX_PAYLOAD_BYTES + 1); // Declare 16385 bytes
+        netBuf.writeBytes(new byte[DecorationRecord.MAX_PAYLOAD_BYTES + 1]);
+
+        assertThrows(io.netty.handler.codec.DecoderException.class, () -> DecorationRecord.readFromNetwork(netBuf));
+        netBuf.release();
     }
 }
