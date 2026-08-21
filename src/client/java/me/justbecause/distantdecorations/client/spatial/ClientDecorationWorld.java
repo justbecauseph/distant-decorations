@@ -57,6 +57,10 @@ public final class ClientDecorationWorld {
         return regions.computeIfAbsent(packRegionKey(regionX, regionZ), k -> new ClientDecorationRegion(regionX, regionZ, revision));
     }
 
+    public Collection<ClientDecorationRegion> getLoadedRegions() {
+        return Collections.unmodifiableCollection(regions.values());
+    }
+
     public void putSnapshotPart(int regionX, int regionZ, long revision, int partIndex, int partCount, List<DecorationRecord> records) {
         long key = packRegionKey(regionX, regionZ);
         ClientDecorationRegion currentRegion = regions.get(key);

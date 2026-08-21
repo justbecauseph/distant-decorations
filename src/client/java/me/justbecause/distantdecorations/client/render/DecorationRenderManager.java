@@ -61,6 +61,10 @@ public final class DecorationRenderManager {
     }
 
     public void renderFrame(LevelRenderContext context) {
+        if (!me.justbecause.distantdecorations.config.DistantDecorationsConfig.isMasterEnabled()) {
+            return;
+        }
+
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
         if (level == null || mc.player == null || mc.gameRenderer == null) {

@@ -26,6 +26,16 @@ loom {
 			sourceSet sourceSets.client
 		}
 	}
+
+	runs {
+		integrationClient {
+			client()
+			name "Integration Client Benchmark"
+			runDir "run-integration"
+			vmArgs "-XX:+UnlockDiagnosticVMOptions", "-XX:+DebugNonSafepoints", "-Xms2G", "-Xmx4G"
+			property "distantdecorations.benchmark_mode", "true"
+		}
+	}
 }
 
 fabricApi {
@@ -48,6 +58,8 @@ dependencies {
 
 	compileOnly "maven.modrinth:chunky:${project.chunky_version}"
 	compileOnly "maven.modrinth:voxy:${project.voxy_version}"
+
+	runtimeOnly "maven.modrinth:voxy:${project.voxy_version}"
 
 	testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher"

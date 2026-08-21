@@ -26,6 +26,44 @@ public class DistantDecorations implements ModInitializer {
         LOGGER.info("Distant Decorations initializing...");
         NetworkHandler.init();
         ServerDecorationManager.getInstance().init();
+
+        net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            dispatcher.register(
+                net.minecraft.commands.Commands.literal("dd")
+                    .then(net.minecraft.commands.Commands.literal("stats")
+                        .executes(ctx -> {
+                            long regions = me.justbecause.distantdecorations.telemetry.TelemetryMetrics.SERVER_REGIONS.get();
+                            long decos = me.justbecause.distantdecorations.telemetry.TelemetryMetrics.SERVER_INDEXED_DECORATIONS.get();
+                            long adds = me.justbecause.distantdecorations.telemetry.TelemetryMetrics.SERVER_ADDS.get();
+                            long removes = me.justbecause.distantdecorations.telemetry.TelemetryMetrics.SERVER_REMOVES.get();
+                            long snapshots = me.justbecause.distantdecorations.telemetry.TelemetryMetrics.SERVER_SNAPSHOTS_SENT.get();
+                            long deltas = me.justbecause.distantdecorations.telemetry.TelemetryMetrics.SERVER_DELTAS_SENT.get();
+                            long bytesSent = me.justbecause.distantdecorations.telemetry.TelemetryMetrics.SERVER_METADATA_BYTES_SENT.get();
+
+                            ctx.getSource().sendSuccess(() -> net.minecraft.network.chat.Component.literal(
+                                String.format(
+                                    "§6[Distant Decorations Server Stats]§r\n" +
+                                    "• Loaded Regions: %d\n" +
+                                    "• Indexed Decorations: %d\n" +
+                                    "• Total Adds / Removals: %d / %d\n" +
+                                    "• Sent Snapshots / Deltas: %d / %d\n" +
+                                    "• Bandwidth Sent: %.2f KiB",
+                                    regions, decos, adds, removes, snapshots, deltas, bytesSent / 1024.0
+                                )
+                            ), false);
+                            return 1;
+                        })
+                    )
+                    .then(net.minecraft.commands.Commands.literal("toggle")
+                        .executes(ctx -> {
+                            boolean next = !me.justbecause.distantdecorations.config.DistantDecorationsConfig.isMasterEnabled();
+                            me.justbecause.distantdecorations.config.DistantDecorationsConfig.setMasterEnabled(next);
+                            ctx.getSource().sendSuccess(() -> net.minecraft.network.chat.Component.literal("§6[Distant Decorations]§r Master enabled: " + next), true);
+                            return 1;
+                        })
+                    )
+            );
+        });
     }
 
     @Nullable

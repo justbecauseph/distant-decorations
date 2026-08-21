@@ -216,6 +216,9 @@ public final class ServerNetworkManager {
                     if (rec.payload() != null && rec.payload().length > DecorationRecord.MAX_PAYLOAD_BYTES) {
                         continue; // skip oversized provider payloads
                     }
+                    if (!me.justbecause.distantdecorations.config.DistantDecorationsConfig.isProviderEnabled(rec.id().type())) {
+                        continue;
+                    }
                     if (sub.supportedTypes == null || sub.supportedTypes.contains(rec.id().type())) {
                         filteredRecords.add(rec);
                     }
@@ -320,6 +323,9 @@ public final class ServerNetworkManager {
             List<DecorationRecord> filteredAdditions = new ArrayList<>();
             for (DecorationRecord add : additions) {
                 if (add.payload() != null && add.payload().length > DecorationRecord.MAX_PAYLOAD_BYTES) {
+                    continue;
+                }
+                if (!me.justbecause.distantdecorations.config.DistantDecorationsConfig.isProviderEnabled(add.id().type())) {
                     continue;
                 }
                 if (sub.supportedTypes == null || sub.supportedTypes.contains(add.id().type())) {
