@@ -173,5 +173,40 @@ public class ScaleBenchmarkTest {
         System.out.println("32x32 Chunk lookup time for 20k records: " + lookupTimeUs + " µs");
         assertTrue(lookupTimeUs < 50_000, "Chunk lookups took too long: " + lookupTimeUs + " µs");
     }
+
+    @Test
+    public void benchmarkDense20kDecorationsSingleCellSnapshotIngestion() {
+        final int COUNT = 20_000;
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("minecraft", "overworld"));
+        Identifier typeId = Identifier.fromNamespaceAndPath("minecraft", "painting");
+
+        ClientDecorationWorld world = new ClientDecorationWorld(dim);
+        List<DecorationRecord> records = new ArrayList<>(COUNT);
+
+        // Put all 20,000 decorations inside a single cell (e.g. 0..63 x and z)
+        for (int i = 0; i < COUNT; i++) {
+            int x = i % 60;
+            int z = (i / 60) % 60;
+            int y = 60 + (i / 3600);
+            BlockPos pos = new BlockPos(x, y, z);
+            DecorationId id = new DecorationId(typeId, dim, pos);
+            AABB bounds = new AABB(x, y, z, x + 1, y + 1, z + 0.1);
+            records.add(new DecorationRecord(id, bounds, 1L, new byte[]{1}));
+        }
+
+        long startIngest = System.nanoTime();
+        world.putSnapshot(0, 0, 1L, records);
+        long ingestTimeMs = (System.nanoTime() - startIngest) / 1_000_000;
+
+        System.out.println(String.format("Dense 20k decorations in single cell snapshot ingestion time: %d ms", ingestTimeMs));
+
+        assertEquals(COUNT, world.getTotalDecorationsCount());
+        ClientDecorationRegion region = world.getRegion(0, 0);
+        assertNotNull(region);
+        assertNotNull(region.bounds());
+
+        // Linear bulk ingestion of 20,000 dense items should take well under 100ms
+        assertTrue(ingestTimeMs < 100, "Dense snapshot ingestion took too long: " + ingestTimeMs + " ms");
+    }
 }
 

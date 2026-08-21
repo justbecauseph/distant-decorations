@@ -91,6 +91,21 @@ public final class ClientDecorationRegion {
         return cells[cellZ * CELLS_PER_REGION_AXIS + cellX];
     }
 
+    public void putBulk(List<DecorationRecord> records) {
+        java.util.Set<DecorationRenderCell> affectedCells = new java.util.HashSet<>();
+        for (DecorationRecord record : records) {
+            ClientDecoration deco = new ClientDecoration(record);
+            allDecorations.put(record.id(), deco);
+            DecorationRenderCell cell = getCellForBlock(record.id().anchor().getX(), record.id().anchor().getZ());
+            cell.addWithoutBoundsRecalc(deco);
+            affectedCells.add(cell);
+        }
+        for (DecorationRenderCell cell : affectedCells) {
+            cell.recalculateBounds();
+        }
+        recalculateBounds();
+    }
+
     public void addOrUpdate(DecorationRecord record) {
         ClientDecoration deco = new ClientDecoration(record);
         allDecorations.put(record.id(), deco);

@@ -136,6 +136,125 @@ public class SpatialIndexTest {
     }
 
     @Test
+    public void test1200RecordSnapshotOutOfOrderAssembly() {
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("minecraft", "overworld"));
+        ClientDecorationWorld world = new ClientDecorationWorld(dim);
+        Identifier type = Identifier.fromNamespaceAndPath("test", "painting");
+
+        final int TOTAL_RECORDS = 1200;
+        List<DecorationRecord> allRecords = new ArrayList<>(TOTAL_RECORDS);
+        for (int i = 0; i < TOTAL_RECORDS; i++) {
+            BlockPos pos = new BlockPos(i % 512, 64, (i / 512) % 512);
+            allRecords.add(new DecorationRecord(
+                new DecorationId(type, dim, pos),
+                new AABB(pos.getX(), 64, pos.getZ(), pos.getX() + 1, 65, pos.getZ() + 0.1),
+                10L,
+                new byte[]{(byte) (i & 0xFF)}
+            ));
+        }
+
+        List<DecorationRecord> part0 = allRecords.subList(0, 400);
+        List<DecorationRecord> part1 = allRecords.subList(400, 800);
+        List<DecorationRecord> part2 = allRecords.subList(800, 1200);
+
+        // Receive in out-of-order sequence: Part 2 -> Part 0 -> Part 1
+        world.putSnapshotPart(0, 0, 10L, 2, 3, part2);
+        assertNull(world.getRegion(0, 0), "Region should not be visible after part 2 of 3");
+
+        world.putSnapshotPart(0, 0, 10L, 0, 3, part0);
+        assertNull(world.getRegion(0, 0), "Region should not be visible after parts 2 and 0 of 3");
+
+        world.putSnapshotPart(0, 0, 10L, 1, 3, part1);
+        assertNotNull(world.getRegion(0, 0), "Region should now be complete and visible");
+        assertEquals(TOTAL_RECORDS, world.getRegion(0, 0).size());
+        assertEquals(10L, world.getRegion(0, 0).revision());
+    }
+
+    @Test
+    public void testSnapshotR10Part0DeltaR11SnapshotR10Parts1And2() {
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("minecraft", "overworld"));
+        ClientDecorationWorld world = new ClientDecorationWorld(dim);
+        Identifier type = Identifier.fromNamespaceAndPath("test", "painting");
+
+        final int TOTAL_RECORDS = 1200;
+        List<DecorationRecord> allRecords = new ArrayList<>(TOTAL_RECORDS);
+        for (int i = 0; i < TOTAL_RECORDS; i++) {
+            BlockPos pos = new BlockPos(i % 512, 64, (i / 512) % 512);
+            allRecords.add(new DecorationRecord(
+                new DecorationId(type, dim, pos),
+                new AABB(pos.getX(), 64, pos.getZ(), pos.getX() + 1, 65, pos.getZ() + 0.1),
+                10L,
+                new byte[]{(byte) (i & 0xFF)}
+            ));
+        }
+
+        List<DecorationRecord> part0 = allRecords.subList(0, 400);
+        List<DecorationRecord> part1 = allRecords.subList(400, 800);
+        List<DecorationRecord> part2 = allRecords.subList(800, 1200);
+
+        // 1. Part 0 arrives (revision 10)
+        world.putSnapshotPart(0, 0, 10L, 0, 3, part0);
+        assertNull(world.getRegion(0, 0));
+
+        // 2. Delta arrives at revision 11 (adds 1 new record, removes 1 from part 0)
+        DecorationId toRemove = part0.get(0).id();
+        DecorationRecord newRecord = new DecorationRecord(
+            new DecorationId(type, dim, new BlockPos(300, 70, 300)),
+            new AABB(300, 70, 300, 302, 72, 300.1),
+            11L,
+            new byte[]{99}
+        );
+        world.applyDelta(0, 0, 11L, List.of(newRecord), List.of(toRemove));
+
+        // 3. Parts 1 and 2 arrive (revision 10)
+        world.putSnapshotPart(0, 0, 10L, 1, 3, part1);
+        world.putSnapshotPart(0, 0, 10L, 2, 3, part2);
+
+        // Region should now be assembled with full R10 baseline AND buffered R11 delta applied!
+        assertNotNull(world.getRegion(0, 0));
+        assertEquals(TOTAL_RECORDS, world.getRegion(0, 0).size());
+        assertEquals(11L, world.getRegion(0, 0).revision());
+        assertTrue(world.getRegion(0, 0).getAllRecords().contains(newRecord));
+        assertFalse(world.getRegion(0, 0).getAllDecorations().stream().anyMatch(d -> d.id().equals(toRemove)));
+    }
+
+    @Test
+    public void testSnapshotR10FollowedByStaleSnapshotR9() {
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("minecraft", "overworld"));
+        ClientDecorationWorld world = new ClientDecorationWorld(dim);
+        Identifier type = Identifier.fromNamespaceAndPath("test", "painting");
+
+        DecorationRecord r1 = new DecorationRecord(new DecorationId(type, dim, new BlockPos(10, 64, 10)), new AABB(10, 64, 10, 12, 66, 10.1), 10L, new byte[]{1});
+        DecorationRecord r2 = new DecorationRecord(new DecorationId(type, dim, new BlockPos(20, 64, 20)), new AABB(20, 64, 20, 22, 66, 20.1), 10L, new byte[]{2});
+
+        world.putSnapshot(0, 0, 10L, List.of(r1, r2));
+        assertEquals(2, world.getRegion(0, 0).size());
+        assertEquals(10L, world.getRegion(0, 0).revision());
+
+        // Stale snapshot at revision 9
+        DecorationRecord oldRec = new DecorationRecord(new DecorationId(type, dim, new BlockPos(50, 64, 50)), new AABB(50, 64, 50, 52, 66, 50.1), 9L, new byte[]{9});
+        world.putSnapshot(0, 0, 9L, List.of(oldRec));
+
+        // R9 must be rejected; R10 is retained
+        assertEquals(2, world.getRegion(0, 0).size());
+        assertEquals(10L, world.getRegion(0, 0).revision());
+        assertTrue(world.getRegion(0, 0).getAllRecords().contains(r1));
+        assertFalse(world.getRegion(0, 0).getAllRecords().contains(oldRec));
+    }
+
+    @Test
+    public void testStandaloneDeltaForUnloadedRegionDoesNotSynthesizeIncompleteRegion() {
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("minecraft", "overworld"));
+        ClientDecorationWorld world = new ClientDecorationWorld(dim);
+        Identifier type = Identifier.fromNamespaceAndPath("test", "painting");
+
+        DecorationRecord r = new DecorationRecord(new DecorationId(type, dim, new BlockPos(10, 64, 10)), new AABB(10, 64, 10, 12, 66, 10.1), 5L, new byte[]{1});
+        world.applyDelta(5, 5, 5L, List.of(r), List.of());
+
+        assertNull(world.getRegion(5, 5), "Delta on unloaded region must not create incomplete region");
+    }
+
+    @Test
     public void testProjectionMetricsPixelCalculation() {
         Vec3 cameraPos = new Vec3(0, 64, 0);
         int viewportWidth = 1920;

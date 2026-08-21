@@ -205,7 +205,18 @@ public final class ServerDecorationWorldIndex {
         }
     }
 
+    public static final int MAINTENANCE_INTERVAL_TICKS = 100; // 5.0 seconds at 20 TPS
+    private int maintenanceTicks = 0;
+
     public void tick(Set<Long> activeSubscribedRegions) {
+        if (++maintenanceTicks < MAINTENANCE_INTERVAL_TICKS) {
+            return;
+        }
+        maintenanceTicks = 0;
+        performMaintenance(activeSubscribedRegions);
+    }
+
+    public void performMaintenance(Set<Long> activeSubscribedRegions) {
         long now = System.currentTimeMillis();
         int flushedCount = 0;
 

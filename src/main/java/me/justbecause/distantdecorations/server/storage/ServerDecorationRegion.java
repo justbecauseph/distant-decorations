@@ -56,6 +56,11 @@ public final class ServerDecorationRegion {
         return dirty;
     }
 
+    public void markDirty() {
+        this.dirty = true;
+        this.lastAccessTime = System.currentTimeMillis();
+    }
+
     public void markClean() {
         this.dirty = false;
     }

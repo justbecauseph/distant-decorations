@@ -77,6 +77,14 @@ public final class ClientNetworkManager {
             lastChunkZ = Integer.MIN_VALUE;
         });
 
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents.CHUNK_LOAD.register((world, chunk) -> {
+            me.justbecause.distantdecorations.client.render.LiveHandoffTracker.getInstance().onChunkLoaded(chunk.getPos().x(), chunk.getPos().z());
+        });
+
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents.CHUNK_UNLOAD.register((world, chunk) -> {
+            me.justbecause.distantdecorations.client.render.LiveHandoffTracker.getInstance().onChunkUnloaded(chunk.getPos().x(), chunk.getPos().z());
+        });
+
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player != null && client.level != null) {
                 int cx = client.player.getBlockX() >> 4;

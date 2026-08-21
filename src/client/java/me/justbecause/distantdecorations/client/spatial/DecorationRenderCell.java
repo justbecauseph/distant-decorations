@@ -48,6 +48,10 @@ public final class DecorationRenderCell {
         return decorations.size();
     }
 
+    public void addWithoutBoundsRecalc(ClientDecoration decoration) {
+        decorations.put(decoration.id(), decoration);
+    }
+
     public void addOrUpdate(DecorationRecord record) {
         decorations.put(record.id(), new ClientDecoration(record));
         recalculateBounds();
@@ -77,7 +81,7 @@ public final class DecorationRenderCell {
         return new AABB(minX, -64.0, minZ, maxX, 320.0, maxZ);
     }
 
-    private void recalculateBounds() {
+    public void recalculateBounds() {
         if (decorations.isEmpty()) {
             this.cellBounds = calculateDefaultBounds();
             return;

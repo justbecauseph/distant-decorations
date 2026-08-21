@@ -6,10 +6,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class ClientDecorationWorld {
@@ -17,12 +14,15 @@ public final class ClientDecorationWorld {
     private final Map<Long, ClientDecorationRegion> regions = new ConcurrentHashMap<>();
     private final Map<Long, PendingSnapshot> pendingSnapshots = new ConcurrentHashMap<>();
 
+    private record PendingDelta(long revision, List<DecorationRecord> additions, List<DecorationId> removals) {}
+
     private static final class PendingSnapshot {
         final int regionX;
         final int regionZ;
         final long revision;
         final int partCount;
         final Map<Integer, List<DecorationRecord>> parts = new ConcurrentHashMap<>();
+        final List<PendingDelta> bufferedDeltas = Collections.synchronizedList(new ArrayList<>());
 
         PendingSnapshot(int regionX, int regionZ, long revision, int partCount) {
             this.regionX = regionX;
@@ -67,11 +67,23 @@ public final class ClientDecorationWorld {
 
         if (partCount <= 1) {
             ClientDecorationRegion region = new ClientDecorationRegion(regionX, regionZ, revision);
-            for (DecorationRecord record : records) {
-                region.addOrUpdate(record);
+            region.putBulk(records);
+
+            PendingSnapshot oldPending = pendingSnapshots.remove(key);
+            if (oldPending != null) {
+                synchronized (oldPending.bufferedDeltas) {
+                    oldPending.bufferedDeltas.sort(Comparator.comparingLong(PendingDelta::revision));
+                    for (PendingDelta d : oldPending.bufferedDeltas) {
+                        if (d.revision() > region.revision()) {
+                            region.setRevision(d.revision());
+                            for (DecorationRecord add : d.additions()) region.addOrUpdate(add);
+                            for (DecorationId rem : d.removals()) region.remove(rem);
+                        }
+                    }
+                }
             }
+
             regions.put(key, region);
-            pendingSnapshots.remove(key);
             return;
         }
 
@@ -85,16 +97,30 @@ public final class ClientDecorationWorld {
             return existing;
         });
 
-        if (pending != null && pending.isComplete()) {
-            ClientDecorationRegion region = new ClientDecorationRegion(regionX, regionZ, revision);
+        if (pending != null && pending.isComplete() && pending.revision == revision) {
+            List<DecorationRecord> allRecords = new ArrayList<>();
             for (int i = 0; i < pending.partCount; i++) {
                 List<DecorationRecord> partRecords = pending.parts.get(i);
                 if (partRecords != null) {
-                    for (DecorationRecord record : partRecords) {
-                        region.addOrUpdate(record);
+                    allRecords.addAll(partRecords);
+                }
+            }
+
+            ClientDecorationRegion region = new ClientDecorationRegion(regionX, regionZ, revision);
+            region.putBulk(allRecords);
+
+            // Replay any buffered deltas that arrived while assembling parts
+            synchronized (pending.bufferedDeltas) {
+                pending.bufferedDeltas.sort(Comparator.comparingLong(PendingDelta::revision));
+                for (PendingDelta d : pending.bufferedDeltas) {
+                    if (d.revision() > region.revision()) {
+                        region.setRevision(d.revision());
+                        for (DecorationRecord add : d.additions()) region.addOrUpdate(add);
+                        for (DecorationId rem : d.removals()) region.remove(rem);
                     }
                 }
             }
+
             regions.put(key, region);
             pendingSnapshots.remove(key);
         }
@@ -105,7 +131,26 @@ public final class ClientDecorationWorld {
     }
 
     public void applyDelta(int regionX, int regionZ, long revision, List<DecorationRecord> additions, List<DecorationId> removals) {
-        ClientDecorationRegion region = getOrCreateRegion(regionX, regionZ, revision);
+        long key = packRegionKey(regionX, regionZ);
+        PendingSnapshot pending = pendingSnapshots.get(key);
+        if (pending != null && pending.revision <= revision) {
+            // Snapshot assembly in progress! Buffer delta to apply after snapshot is complete.
+            pending.bufferedDeltas.add(new PendingDelta(revision, additions, removals));
+            return;
+        }
+
+        ClientDecorationRegion region = regions.get(key);
+        if (region == null) {
+            // Region is not yet loaded / no snapshot received yet.
+            // Do not synthesize an empty region with missing baseline.
+            return;
+        }
+
+        if (revision <= region.revision()) {
+            // Stale delta, ignore
+            return;
+        }
+
         region.setRevision(revision);
         for (DecorationRecord record : additions) {
             region.addOrUpdate(record);
@@ -138,4 +183,5 @@ public final class ClientDecorationWorld {
         return total;
     }
 }
+
 

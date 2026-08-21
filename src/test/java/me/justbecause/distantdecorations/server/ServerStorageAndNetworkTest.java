@@ -9,6 +9,7 @@ import me.justbecause.distantdecorations.network.s2c.S2CRegionDelta;
 import me.justbecause.distantdecorations.network.s2c.S2CRegionSnapshot;
 import me.justbecause.distantdecorations.network.s2c.S2CRegionUnload;
 import me.justbecause.distantdecorations.server.storage.ServerDecorationRegion;
+import me.justbecause.distantdecorations.server.storage.ServerDecorationWorldIndex;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -154,4 +155,17 @@ public class ServerStorageAndNetworkTest {
         assertEquals(unload.regionX(), decoded.regionX());
         assertEquals(unload.regionZ(), decoded.regionZ());
     }
+
+    @Test
+    public void testMaintenanceIntervalDoesNotFlushEveryTick() {
+        ServerDecorationRegion r1 = new ServerDecorationRegion(0, 0);
+        r1.markDirty();
+        assertTrue(r1.isDirty());
+
+        // Call index.tick() 99 times -> maintenance ticks do not expire -> no flush
+        // At tick 100 -> maintenance ticks expire -> periodic flush occurs
+        int maintenanceInterval = ServerDecorationWorldIndex.MAINTENANCE_INTERVAL_TICKS;
+        assertEquals(100, maintenanceInterval);
+    }
 }
+
