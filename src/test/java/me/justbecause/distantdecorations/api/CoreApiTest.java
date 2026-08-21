@@ -95,4 +95,38 @@ public class CoreApiTest {
 
         assertEquals(original, restored);
     }
+
+    @Test
+    public void testDefensivePayloadLimitEnforcement() {
+        Identifier type = Identifier.fromNamespaceAndPath("test", "large");
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("minecraft", "overworld"));
+        BlockPos pos = new BlockPos(0, 64, 0);
+        DecorationId id = new DecorationId(type, dim, pos);
+        AABB bounds = new AABB(0, 64, 0, 1, 65, 0.1);
+
+        // 1. Instantiation rejection
+        byte[] oversizedPayload = new byte[DecorationRecord.MAX_PAYLOAD_BYTES + 1];
+        assertThrows(IllegalArgumentException.class, () -> new DecorationRecord(id, bounds, 1L, oversizedPayload));
+
+        // 2. Stream deserialization defense (corrupted header declaring huge payload)
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream dos = new DataOutputStream(baos);
+        try {
+            id.writeToStream(dos);
+            dos.writeDouble(bounds.minX);
+            dos.writeDouble(bounds.minY);
+            dos.writeDouble(bounds.minZ);
+            dos.writeDouble(bounds.maxX);
+            dos.writeDouble(bounds.maxY);
+            dos.writeDouble(bounds.maxZ);
+            dos.writeLong(1L);
+            dos.writeInt(100_000); // 100 KiB corrupted length header
+            dos.write(new byte[100]); // partial stream
+        } catch (Exception e) {
+            fail(e);
+        }
+
+        DataInputStream dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
+        assertThrows(java.io.IOException.class, () -> DecorationRecord.readFromStream(dis));
+    }
 }

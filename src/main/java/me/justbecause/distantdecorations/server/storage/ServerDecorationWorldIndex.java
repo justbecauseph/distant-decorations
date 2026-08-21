@@ -50,7 +50,7 @@ public final class ServerDecorationWorldIndex {
         return chunkCoord >> 5; // divide by 32
     }
 
-    public static final int MAX_PAYLOAD_BYTES = 16384; // 16 KiB
+    public static final int MAX_PAYLOAD_BYTES = DecorationRecord.MAX_PAYLOAD_BYTES;
     private final AtomicLong indexedDecorationCount = new AtomicLong(0);
 
     public ServerLevel getLevel() {

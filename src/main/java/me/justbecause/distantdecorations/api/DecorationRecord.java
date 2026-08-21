@@ -15,10 +15,15 @@ public record DecorationRecord(
     long revision,
     byte[] payload
 ) {
+    public static final int MAX_PAYLOAD_BYTES = 16384; // 16 KiB ceiling across capture, storage, and networking
+
     public DecorationRecord {
         Objects.requireNonNull(id, "id cannot be null");
         Objects.requireNonNull(bounds, "bounds cannot be null");
         Objects.requireNonNull(payload, "payload cannot be null");
+        if (payload.length > MAX_PAYLOAD_BYTES) {
+            throw new IllegalArgumentException("Payload size " + payload.length + " exceeds maximum allowed " + MAX_PAYLOAD_BYTES + " bytes");
+        }
     }
 
     public void writeToNetwork(FriendlyByteBuf buf) {
@@ -43,7 +48,7 @@ public record DecorationRecord(
         double maxZ = buf.readDouble();
         AABB bounds = new AABB(minX, minY, minZ, maxX, maxY, maxZ);
         long revision = buf.readVarLong();
-        byte[] payload = buf.readByteArray();
+        byte[] payload = buf.readByteArray(MAX_PAYLOAD_BYTES);
         return new DecorationRecord(id, bounds, revision, payload);
     }
 
@@ -71,6 +76,9 @@ public record DecorationRecord(
         AABB bounds = new AABB(minX, minY, minZ, maxX, maxY, maxZ);
         long revision = in.readLong();
         int payloadLength = in.readInt();
+        if (payloadLength < 0 || payloadLength > MAX_PAYLOAD_BYTES) {
+            throw new IOException("Invalid or corrupted decoration payload length: " + payloadLength + " (max allowed: " + MAX_PAYLOAD_BYTES + ")");
+        }
         byte[] payload = new byte[payloadLength];
         in.readFully(payload);
         return new DecorationRecord(id, bounds, revision, payload);

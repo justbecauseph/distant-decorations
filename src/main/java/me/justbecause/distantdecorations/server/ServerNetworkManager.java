@@ -213,7 +213,7 @@ public final class ServerNetworkManager {
                 Collection<DecorationRecord> allRecords = region.getAllRecords();
                 List<DecorationRecord> filteredRecords = new ArrayList<>();
                 for (DecorationRecord rec : allRecords) {
-                    if (rec.payload() != null && rec.payload().length > ServerDecorationWorldIndex.MAX_PAYLOAD_BYTES) {
+                    if (rec.payload() != null && rec.payload().length > DecorationRecord.MAX_PAYLOAD_BYTES) {
                         continue; // skip oversized provider payloads
                     }
                     if (sub.supportedTypes == null || sub.supportedTypes.contains(rec.id().type())) {
@@ -319,7 +319,7 @@ public final class ServerNetworkManager {
 
             List<DecorationRecord> filteredAdditions = new ArrayList<>();
             for (DecorationRecord add : additions) {
-                if (add.payload() != null && add.payload().length > ServerDecorationWorldIndex.MAX_PAYLOAD_BYTES) {
+                if (add.payload() != null && add.payload().length > DecorationRecord.MAX_PAYLOAD_BYTES) {
                     continue;
                 }
                 if (sub.supportedTypes == null || sub.supportedTypes.contains(add.id().type())) {
