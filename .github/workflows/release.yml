@@ -60,4 +60,4 @@ jobs:
           MODRINTH_PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
           MODRINTH_CHANGELOG: ${{ github.event.release.body }}
           MODRINTH_VERSION_TYPE: ${{ github.event.release.prerelease && 'beta' || 'release' }}
-        run: ./gradlew modrinth modrinthSyncBody
+        run: ./gradlew modrinth
