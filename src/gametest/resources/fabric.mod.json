@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "distantdecorations-gametest",
+  "version": "1.0.0",
+  "name": "Distant Decorations Game Tests",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-gametest": [
+      "me.justbecause.distantdecorations.gametest.DistantDecorationsIntegrationGameTest"
+    ]
+  }
+}
