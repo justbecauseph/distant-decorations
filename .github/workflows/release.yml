@@ -3,24 +3,33 @@ name: Publish
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to publish to Maven (manual runs do not publish to Modrinth)
+        required: true
+        default: main
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-${{ github.event.release.tag_name }}
+  group: publish-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
   cancel-in-progress: false
 
 jobs:
-  publish-modrinth:
-    name: Publish to Modrinth
+  publish:
+    name: Publish release
     runs-on: ubuntu-latest
+    env:
+      SOURCE_REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
 
     steps:
-      - name: Checkout release
+      - name: Checkout Distant Decorations
         uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.SOURCE_REF }}
           fetch-depth: 0
 
       - name: Set up Java 25
@@ -36,6 +45,7 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Verify release version
+        if: github.event_name == 'release'
         shell: bash
         run: |
           TAG="${{ github.event.release.tag_name }}"
@@ -54,7 +64,62 @@ jobs:
       - name: Build and test
         run: ./gradlew clean build
 
+      - name: Checkout public Maven repository
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: justbecauseph/maven
+          token: ${{ secrets.MAVEN_REPO_TOKEN }}
+          path: public-maven
+          fetch-depth: 0
+
+      - name: Check Maven version
+        shell: bash
+        run: |
+          MOD_VERSION="$(grep '^mod_version=' gradle.properties | cut -d= -f2)"
+          VERSION_DIR="public-maven/me/justbecause/distantdecorations/distant-decorations/$MOD_VERSION"
+
+          if [ -d "$VERSION_DIR" ]; then
+            echo "Maven version $MOD_VERSION already exists; Maven publication will be skipped."
+            echo "MAVEN_VERSION_EXISTS=true" >> "$GITHUB_ENV"
+          else
+            echo "MAVEN_VERSION_EXISTS=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Publish to public Maven repository
+        env:
+          PUBLIC_MAVEN_REPO_DIR: ${{ github.workspace }}/public-maven
+        shell: bash
+        run: |
+          if [ "$MAVEN_VERSION_EXISTS" = "true" ]; then
+            exit 0
+          fi
+
+          ./gradlew publishMavenJavaPublicationToPublicMavenRepository
+
+      - name: Commit public Maven repository
+        shell: bash
+        run: |
+          if [ "$MAVEN_VERSION_EXISTS" = "true" ]; then
+            exit 0
+          fi
+
+          MOD_VERSION="$(grep '^mod_version=' gradle.properties | cut -d= -f2)"
+
+          cd public-maven
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+
+          if git diff --cached --quiet; then
+            echo "No Maven repository changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Publish distant-decorations $MOD_VERSION"
+          git push origin HEAD:main
+
       - name: Publish to Modrinth
+        if: github.event_name == 'release'
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
           MODRINTH_PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
