@@ -1,6 +1,7 @@
 plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 	id 'maven-publish'
+	id 'com.modrinth.minotaur' version '2.9.0'
 }
 
 version = project.mod_version
@@ -93,6 +94,28 @@ java {
 jar {
 	def projectName = project.name
 	inputs.property "projectName", projectName
+}
+
+modrinth {
+    token = System.getenv("MODRINTH_TOKEN")
+    projectId = System.getenv("MODRINTH_PROJECT_ID")
+
+    versionNumber = project.mod_version
+    versionName = "Distant Decorations ${project.mod_version}"
+    versionType = System.getenv("MODRINTH_VERSION_TYPE") ?: "release"
+
+    uploadFile = remapJar
+
+    gameVersions = [project.minecraft_version]
+    loaders = ["fabric"]
+
+    changelog = System.getenv("MODRINTH_CHANGELOG") ?: "See GitHub release notes."
+
+		syncBodyFrom = rootProject.file("README.md").text
+
+    dependencies {
+        required.project "fabric-api"
+    }
 }
 
 publishing {

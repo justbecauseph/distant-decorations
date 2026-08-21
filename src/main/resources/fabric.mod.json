@@ -8,7 +8,7 @@
     "justbecause"
   ],
   "contact": {},
-  "license": "MIT",
+  "license": "MPL-2.0",
   "environment": "*",
   "entrypoints": {
     "main": [
