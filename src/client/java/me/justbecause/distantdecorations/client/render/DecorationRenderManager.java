@@ -71,6 +71,8 @@ public final class DecorationRenderManager {
             return;
         }
 
+        TelemetryMetrics.beginClientFrame();
+
         ClientDecorationWorld world = clientWorlds.get(level.dimension());
         if (world == null || world.getTotalDecorationsCount() == 0) {
             return;
@@ -91,7 +93,6 @@ public final class DecorationRenderManager {
         SubmitNodeCollector submitNodeCollector = context.submitNodeCollector();
         PoseStack poseStack = context.poseStack();
 
-        TelemetryMetrics.beginClientFrame();
         candidateList.clear();
         topKHeap.clear();
         activeRenderers.clear();

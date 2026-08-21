@@ -10,6 +10,8 @@ public final class DistantDecorationsConfig {
     private static volatile double minProjectedPixelSize = Double.parseDouble(System.getProperty("distantdecorations.min_projected_pixel_size", "0.10"));
     private static volatile double maxRenderDistance = Double.parseDouble(System.getProperty("distantdecorations.max_render_distance", String.valueOf(clientSubscriptionRadiusChunks * 16.0)));
 
+    private static volatile Runnable onSubscriptionRadiusChanged = null;
+
     private DistantDecorationsConfig() {}
 
     public static boolean isMasterEnabled() {
@@ -32,9 +34,17 @@ public final class DistantDecorationsConfig {
         return clientSubscriptionRadiusChunks;
     }
 
+    public static void setOnSubscriptionRadiusChanged(Runnable callback) {
+        onSubscriptionRadiusChanged = callback;
+    }
+
     public static void setClientSubscriptionRadiusChunks(int radiusChunks) {
         clientSubscriptionRadiusChunks = Math.max(16, radiusChunks);
         maxRenderDistance = clientSubscriptionRadiusChunks * 16.0;
+        Runnable callback = onSubscriptionRadiusChanged;
+        if (callback != null) {
+            callback.run();
+        }
     }
 
     public static double getMinProjectedPixelSize() {

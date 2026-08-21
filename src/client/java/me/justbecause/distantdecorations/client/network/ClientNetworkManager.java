@@ -105,6 +105,19 @@ public final class ClientNetworkManager {
                 }
             }
         });
+
+        DistantDecorationsConfig.setOnSubscriptionRadiusChanged(this::triggerSubscriptionRefresh);
+    }
+
+    public void triggerSubscriptionRefresh() {
+        Minecraft client = Minecraft.getInstance();
+        if (client.player != null && client.level != null && helloSent) {
+            int cx = client.player.getBlockX() >> 4;
+            int cz = client.player.getBlockZ() >> 4;
+            lastChunkX = cx;
+            lastChunkZ = cz;
+            sendSubscriptionUpdate(cx, cz);
+        }
     }
 
     public void sendClientHello() {
