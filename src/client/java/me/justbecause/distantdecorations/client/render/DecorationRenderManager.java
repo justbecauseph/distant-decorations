@@ -152,7 +152,7 @@ public final class DecorationRenderManager {
                     }
 
                     // 3. Live-BE Suppression Check
-                    if (handoffTracker.isSuppressed(deco.id(), level)) {
+                    if (handoffTracker.isSuppressed(deco.id(), level, cameraPos)) {
                         TelemetryMetrics.clientLiveSuppressions++;
                         continue;
                     }

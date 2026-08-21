@@ -35,12 +35,22 @@ public final class LiveHandoffTracker {
         chunkLoadTimes.clear();
     }
 
+    public static final double DEFAULT_LIVE_BE_RENDER_DISTANCE = 64.0;
+
     /**
      * Determines whether the distant decoration at the given anchor should be suppressed in favor of the live block entity.
      * Implements the 3-state machine: DISTANT -> WAITING_FOR_LIVE -> LIVE.
      */
-    public boolean isSuppressed(DecorationId id, ClientLevel level) {
+    public boolean isSuppressed(DecorationId id, ClientLevel level, net.minecraft.world.phys.Vec3 cameraPos) {
         BlockPos pos = id.anchor();
+
+        // If beyond live block entity render distance, Minecraft / Sodium will NOT render the live BE!
+        double maxLiveDist = DEFAULT_LIVE_BE_RENDER_DISTANCE * net.minecraft.client.Minecraft.getInstance().options.entityDistanceScaling().get();
+        double distSq = pos.distToCenterSqr(cameraPos.x, cameraPos.y, cameraPos.z);
+        if (distSq > maxLiveDist * maxLiveDist) {
+            return false;
+        }
+
         int chunkX = pos.getX() >> 4;
         int chunkZ = pos.getZ() >> 4;
 
@@ -58,7 +68,7 @@ public final class LiveHandoffTracker {
         if (be != null) {
             DecorationProvider<?> provider = DecorationRegistry.findProvider(be);
             if (provider == null || provider.type().id().equals(id.type())) {
-                // Real matching BE exists in loaded chunk -> LIVE -> suppress distant renderer
+                // Real matching BE exists in loaded chunk and is within live render distance -> LIVE -> suppress distant renderer
                 return true;
             }
         }
