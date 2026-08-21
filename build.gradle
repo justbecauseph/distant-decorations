@@ -1,130 +1,164 @@
 plugins {
-	id 'net.fabricmc.fabric-loom' version "${loom_version}"
-	id 'maven-publish'
-	id 'com.modrinth.minotaur' version '2.9.0'
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
+    id 'maven-publish'
+    id 'com.modrinth.minotaur' version '2.9.0'
 }
 
 version = project.mod_version
 group = project.maven_group
 
 repositories {
-	maven {
-		name = "Modrinth"
-		url = "https://api.modrinth.com/maven"
-		content {
-			includeGroup "maven.modrinth"
-		}
-	}
-	mavenCentral()
+    maven {
+        name = "Modrinth"
+        url = "https://api.modrinth.com/maven"
+        content {
+            includeGroup "maven.modrinth"
+        }
+    }
+
+    mavenCentral()
 }
 
 loom {
-	splitEnvironmentSourceSets()
+    splitEnvironmentSourceSets()
 
-	mods {
-		"distantdecorations" {
-			sourceSet sourceSets.main
-			sourceSet sourceSets.client
-		}
-	}
+    mods {
+        "distantdecorations" {
+            sourceSet sourceSets.main
+            sourceSet sourceSets.client
+        }
+    }
 
-	runs {
-		integrationClient {
-			client()
-			name "Integration Client Benchmark"
-			runDir "run-integration"
-			vmArgs "-XX:+UnlockDiagnosticVMOptions", "-XX:+DebugNonSafepoints", "-Xms2G", "-Xmx4G"
-			property "distantdecorations.benchmark_mode", "true"
-		}
-	}
+    runs {
+        integrationClient {
+            client()
+            name "Integration Client Benchmark"
+            runDir "run-integration"
+
+            vmArgs(
+                "-XX:+UnlockDiagnosticVMOptions",
+                "-XX:+DebugNonSafepoints",
+                "-Xms2G",
+                "-Xmx4G"
+            )
+
+            property "distantdecorations.benchmark_mode", "true"
+        }
+    }
 }
 
 fabricApi {
-	configureTests {
-		createSourceSet = true
-		modId = "distantdecorations-gametest"
+    configureTests {
+        createSourceSet = true
+        modId = "distantdecorations-gametest"
 
-		enableGameTests = true
-		enableClientGameTests = false
+        enableGameTests = true
+        enableClientGameTests = false
 
-		// Required to run server GameTests.
-		eula = true
-	}
+        // Required to run server GameTests.
+        eula = true
+    }
 }
 
 dependencies {
-	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
 
-	compileOnly "maven.modrinth:chunky:${project.chunky_version}"
-	compileOnly "maven.modrinth:voxy:${project.voxy_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
-	runtimeOnly "maven.modrinth:voxy:${project.voxy_version}"
-	runtimeOnly "maven.modrinth:sodium:${project.sodium_version}"
-	runtimeOnly "maven.modrinth:spark:${project.spark_version}"
+    // Optional integrations
+    compileOnly "maven.modrinth:chunky:${project.chunky_version}"
+    compileOnly "maven.modrinth:voxy:${project.voxy_version}"
 
-	testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
-	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    // Integration benchmark runtime
+    runtimeOnly "maven.modrinth:voxy:${project.voxy_version}"
+    runtimeOnly "maven.modrinth:sodium:${project.sodium_version}"
+    runtimeOnly "maven.modrinth:spark:${project.spark_version}"
+
+    // Tests
+    testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
 }
 
 test {
-	useJUnitPlatform()
+    useJUnitPlatform()
 }
 
 processResources {
-	def version = project.version
-	inputs.property "version", version
+    def version = project.version
 
-	filesMatching("fabric.mod.json") {
-		expand "version": version
-	}
+    inputs.property "version", version
+
+    filesMatching("fabric.mod.json") {
+        expand "version": version
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
-	it.options.release = 25
+    options.release = 25
 }
 
 java {
-	withSourcesJar()
-	sourceCompatibility = JavaVersion.VERSION_25
-	targetCompatibility = JavaVersion.VERSION_25
+    withSourcesJar()
+
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 jar {
-	def projectName = project.name
-	inputs.property "projectName", projectName
+    def projectName = project.name
+    inputs.property "projectName", projectName
 }
 
 modrinth {
     token = System.getenv("MODRINTH_TOKEN")
     projectId = System.getenv("MODRINTH_PROJECT_ID")
 
-    versionNumber = project.mod_version
-    versionName = "Distant Decorations ${project.mod_version}"
+    versionNumber = project.version.toString()
+    versionName = "Distant Decorations ${project.version}"
+
     versionType = System.getenv("MODRINTH_VERSION_TYPE") ?: "release"
 
-    uploadFile = tasks.named("remapJar").get()
+    uploadFile = tasks.jar
 
-    gameVersions = [project.minecraft_version]
-    loaders = ["fabric"]
+    gameVersions = [
+        project.minecraft_version.toString()
+    ]
 
-    changelog = System.getenv("MODRINTH_CHANGELOG") ?: "See GitHub release notes."
+    loaders = [
+        "fabric"
+    ]
+
+    changelog = System.getenv("MODRINTH_CHANGELOG")
+        ?: "See GitHub release notes."
 
     dependencies {
         required.project "fabric-api"
     }
+
+    /*
+     * Set MODRINTH_DEBUG=true to inspect the payload without
+     * actually creating a Modrinth version.
+     */
+    debugMode = Boolean.parseBoolean(
+        System.getenv("MODRINTH_DEBUG") ?: "false"
+    )
 }
 
+/*
+ * Don't allow a Modrinth publish to bypass the normal build/tests.
+ *
+ * Minotaur already automatically depends on the uploadFile task,
+ * but this also ensures `check`/tests run before publishing.
+ */
 tasks.named("modrinth") {
-    dependsOn tasks.named("remapJar")
+    dependsOn tasks.named("build")
 }
 
 publishing {
-	publications {
-		mavenJava(MavenPublication) {
-			from components.java
-		}
-	}
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
 }
-
