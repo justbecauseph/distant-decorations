@@ -159,6 +159,42 @@ publishing {
     publications {
         mavenJava(MavenPublication) {
             from components.java
+
+            groupId = project.maven_group.toString()
+            artifactId = "distant-decorations"
+            version = project.version.toString()
+
+            pom {
+                name = "Distant Decorations"
+                description = "A high-performance Fabric framework for persistent, long-distance decorative block-entity visuals."
+                url = "https://github.com/justbecauseph/distant-decorations"
+
+                licenses {
+                    license {
+                        name = "Mozilla Public License 2.0"
+                        url = "https://www.mozilla.org/MPL/2.0/"
+                    }
+                }
+
+                scm {
+                    connection = "scm:git:https://github.com/justbecauseph/distant-decorations.git"
+                    developerConnection = "scm:git:ssh://git@github.com/justbecauseph/distant-decorations.git"
+                    url = "https://github.com/justbecauseph/distant-decorations"
+                }
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            name = "publicMaven"
+
+            // CI points this at a checkout of justbecauseph/maven.
+            // Locally, publishing falls back to build/public-maven.
+            url = uri(
+                System.getenv("PUBLIC_MAVEN_REPO_DIR")
+                    ?: layout.buildDirectory.dir("public-maven").get().asFile
+            )
         }
     }
 }
