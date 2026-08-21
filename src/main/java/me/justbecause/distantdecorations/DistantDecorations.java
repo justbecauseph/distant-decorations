@@ -1,7 +1,10 @@
 package me.justbecause.distantdecorations;
 
 import me.justbecause.distantdecorations.api.DecorationRecord;
+import me.justbecause.distantdecorations.api.DecorationRegistry;
 import me.justbecause.distantdecorations.network.NetworkHandler;
+import me.justbecause.distantdecorations.provider.camerapture.CameraptureProvider;
+import me.justbecause.distantdecorations.provider.painting.FastPaintingsProvider;
 import me.justbecause.distantdecorations.server.ServerDecorationManager;
 import net.fabricmc.api.ModInitializer;
 import net.minecraft.core.BlockPos;
@@ -23,6 +26,9 @@ public class DistantDecorations implements ModInitializer {
     @Override
     public void onInitialize() {
         LOGGER.info("Distant Decorations initializing...");
+        DecorationRegistry.registerProvider(new FastPaintingsProvider());
+        DecorationRegistry.registerProvider(new CameraptureProvider());
+
         NetworkHandler.init();
         ServerDecorationManager.getInstance().init();
     }
