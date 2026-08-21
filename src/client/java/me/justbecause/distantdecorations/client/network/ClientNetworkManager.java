@@ -9,6 +9,7 @@ import me.justbecause.distantdecorations.network.c2s.C2SSubscriptionUpdate;
 import me.justbecause.distantdecorations.network.s2c.S2CRegionDelta;
 import me.justbecause.distantdecorations.network.s2c.S2CRegionSnapshot;
 import me.justbecause.distantdecorations.network.s2c.S2CRegionUnload;
+import me.justbecause.distantdecorations.config.DistantDecorationsConfig;
 import me.justbecause.distantdecorations.server.ServerNetworkManager;
 import me.justbecause.distantdecorations.telemetry.TelemetryMetrics;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -114,7 +115,7 @@ public final class ClientNetworkManager {
         for (DecorationType<?> type : DecorationRegistry.getTypes()) {
             types.add(type.id());
         }
-        int radiusChunks = Minecraft.getInstance().options.renderDistance().get() * 4; // request up to 4x render distance
+        int radiusChunks = DistantDecorationsConfig.getClientSubscriptionRadiusChunks();
         ClientPlayNetworking.send(new C2SClientHello(ServerNetworkManager.PROTOCOL_VERSION, types, radiusChunks));
         helloSent = true;
     }
@@ -123,7 +124,7 @@ public final class ClientNetworkManager {
         if (!ClientPlayNetworking.canSend(C2SSubscriptionUpdate.TYPE)) {
             return;
         }
-        int radiusChunks = Minecraft.getInstance().options.renderDistance().get() * 4;
+        int radiusChunks = DistantDecorationsConfig.getClientSubscriptionRadiusChunks();
         ClientPlayNetworking.send(new C2SSubscriptionUpdate(centerChunkX, centerChunkZ, radiusChunks));
     }
 }

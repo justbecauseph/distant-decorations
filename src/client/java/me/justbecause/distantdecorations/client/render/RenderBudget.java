@@ -2,13 +2,14 @@ package me.justbecause.distantdecorations.client.render;
 
 import me.justbecause.distantdecorations.api.DecorationRecord;
 import me.justbecause.distantdecorations.client.spatial.ClientDecoration;
+import me.justbecause.distantdecorations.config.DistantDecorationsConfig;
 
 import java.util.Comparator;
 
 public final class RenderBudget {
     private int maxSubmissionsPerFrame = 2000;
-    private double minProjectedPixelSize = 1.0;
-    private double maxRenderDistance = 4096.0;
+    private double minProjectedPixelSize = DistantDecorationsConfig.getMinProjectedPixelSize();
+    private double maxRenderDistance = DistantDecorationsConfig.getMaxRenderDistance();
 
     public record RenderCandidate(
         ClientDecoration decoration,
@@ -37,7 +38,7 @@ public final class RenderBudget {
     }
 
     public void setMinProjectedPixelSize(double minProjectedPixelSize) {
-        this.minProjectedPixelSize = Math.max(0.1, minProjectedPixelSize);
+        this.minProjectedPixelSize = Math.max(0.05, minProjectedPixelSize);
     }
 
     public double getMaxRenderDistance() {
@@ -53,4 +54,3 @@ public final class RenderBudget {
         return projectedPixelSize * 1000.0 - Math.sqrt(distanceSq);
     }
 }
-

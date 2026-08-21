@@ -137,6 +137,7 @@ public final class DecorationRenderManager {
                     AABB bounds = deco.bounds();
                     double distSq = metrics.getDistanceSq(bounds);
                     if (distSq > maxDistSq) {
+                        TelemetryMetrics.clientDistanceRejected++;
                         continue;
                     }
 

@@ -20,6 +20,7 @@ public final class TelemetryMetrics {
     public static long clientCellsFrustumRejected;
     public static long clientObjectsChecked;
     public static long clientObjectsFrustumRejected;
+    public static long clientDistanceRejected;
     public static long clientSubpixelRejected;
     public static long clientBudgetRejected;
     public static long clientLiveSuppressions;
@@ -39,6 +40,7 @@ public final class TelemetryMetrics {
         clientCellsFrustumRejected = 0;
         clientObjectsChecked = 0;
         clientObjectsFrustumRejected = 0;
+        clientDistanceRejected = 0;
         clientSubpixelRejected = 0;
         clientBudgetRejected = 0;
         clientLiveSuppressions = 0;

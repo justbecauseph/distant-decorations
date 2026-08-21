@@ -26,8 +26,8 @@ public final class ServerNetworkManager {
 
     public static final int PROTOCOL_VERSION = 1;
     public static final int MIN_RADIUS_CHUNKS = 16;
-    public static final int DEFAULT_MAX_RADIUS_CHUNKS = 128; // 4 regions
-    public static final int ABSOLUTE_MAX_RADIUS_CHUNKS = 256;
+    public static final int DEFAULT_MAX_RADIUS_CHUNKS = 512; // 16 regions (8192 blocks)
+    public static final int ABSOLUTE_MAX_RADIUS_CHUNKS = 1024; // 32 regions (16384 blocks)
     public static final int MAX_RECORDS_PER_SNAPSHOT_PART = 400;
     public static final int MAX_BYTES_PER_SNAPSHOT_PART = 32768; // 32 KiB target part size
     public static final int DEFAULT_MAX_BYTES_PER_TICK = 131072; // 128 KiB per tick per player
