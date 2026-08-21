@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "distantdecorations",
+  "version": "${version}",
+  "name": "Distant Decorations",
+  "description": "Renders lightweight representations of block-backed decorations outside vanilla chunk distance.",
+  "authors": [
+    "justbecause"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "me.justbecause.distantdecorations.DistantDecorations"
+    ],
+    "client": [
+      "me.justbecause.distantdecorations.client.DistantDecorationsClient"
+    ]
+  },
+  "mixins": [
+    "distantdecorations.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~26.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "voxy": "*",
+    "fastpaintings": "*",
+    "camerapture": "*",
+    "chunky": "*"
+  }
+}
