@@ -104,18 +104,20 @@ modrinth {
     versionName = "Distant Decorations ${project.mod_version}"
     versionType = System.getenv("MODRINTH_VERSION_TYPE") ?: "release"
 
-    uploadFile = remapJar
+    uploadFile = tasks.named("remapJar").get()
 
     gameVersions = [project.minecraft_version]
     loaders = ["fabric"]
 
     changelog = System.getenv("MODRINTH_CHANGELOG") ?: "See GitHub release notes."
 
-		syncBodyFrom = rootProject.file("README.md").text
-
     dependencies {
         required.project "fabric-api"
     }
+}
+
+tasks.named("modrinth") {
+    dependsOn tasks.named("remapJar")
 }
 
 publishing {
