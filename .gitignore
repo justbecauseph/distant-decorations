@@ -13,3 +13,4 @@ libs/
 .classpath
 .settings/
 .DS_Store
+run-integration
