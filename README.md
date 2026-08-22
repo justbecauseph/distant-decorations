@@ -26,7 +26,7 @@ By decoupling visual representation from ticking block entities and leveraging h
 - **OBE Coexistence**: Designed to cleanly coexist with **OptimisedBlockEntities (OBE)** by operating completely independently of ticking block entity lifecycles.
 - **Chunky Integration**: Safely intercepts asynchronous chunk generation from [Chunky](https://modrinth.com/mod/chunky) and marshals reconciliation back onto the server main thread to atomically commit newly generated block entities to the world index.
 - **GPU & Network Throttling**:
-  - Distance & screen-space prioritized budget limiter (`projectedPixelSize * 1000 - distance`) using bounded top-K selection ($O(N \log K)$).
+  - Distance & screen-space prioritized budget limiter (`projectedPixelSize * 1000 - distance`) using bounded top-K selection (`O(N log K)`).
   - Bandwidth-throttled (128 KiB/tick) chunked multipart snapshot packet streaming (nearest-first) with atomic client-side assembly.
   - Ingestion-time payload pre-decoding: zero payload deserialization or `ByteBuf` allocation in the render loop.
 
