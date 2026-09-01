@@ -36,6 +36,9 @@ public abstract class MixinLevelChunk {
 
     @Inject(method = "removeBlockEntity", at = @At("HEAD"))
     private void dd$onRemoveBlockEntity(BlockPos pos, CallbackInfo ci) {
+        // LevelChunk.clearAllBlockEntities() only calls BlockEntity.setRemoved() while unloading a
+        // chunk. Hooking the explicit removal path keeps the persistent record across unloads while
+        // still removing it when the backing block entity is actually replaced or destroyed.
         if (this.level instanceof ServerLevel serverLevel && pos != null) {
             ServerDecorationManager.getInstance().remove(serverLevel, pos);
         }

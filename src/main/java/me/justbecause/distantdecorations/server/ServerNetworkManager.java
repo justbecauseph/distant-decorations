@@ -41,6 +41,7 @@ public final class ServerNetworkManager {
         int radiusChunks = 64;
         boolean helloAccepted = false;
         Set<Identifier> supportedTypes = null;
+        ResourceKey<Level> dimension;
 
         final Set<Long> desiredRegions = ConcurrentHashMap.newKeySet();
         final Set<Long> streamingRegions = ConcurrentHashMap.newKeySet();
@@ -54,6 +55,7 @@ public final class ServerNetworkManager {
             this.player = player;
             this.centerChunkX = player.getBlockX() >> 4;
             this.centerChunkZ = player.getBlockZ() >> 4;
+            this.dimension = player.level().dimension();
         }
     }
 
@@ -87,6 +89,7 @@ public final class ServerNetworkManager {
         sub.supportedTypes = hello.supportedTypes() != null ? new HashSet<>(hello.supportedTypes()) : Collections.emptySet();
         int requested = hello.requestedRadiusChunks();
         sub.radiusChunks = Math.max(MIN_RADIUS_CHUNKS, Math.min(requested, ABSOLUTE_MAX_RADIUS_CHUNKS));
+        resetSubscriptionState(sub, player.level().dimension());
         updateSubscriptions(player, player.getBlockX() >> 4, player.getBlockZ() >> 4, sub.radiusChunks);
     }
 
@@ -108,6 +111,11 @@ public final class ServerNetworkManager {
         PlayerSubscription sub = subscriptions.get(player.getUUID());
         if (sub == null || !sub.helloAccepted) {
             return;
+        }
+
+        ResourceKey<Level> currentDimension = player.level().dimension();
+        if (!currentDimension.equals(sub.dimension)) {
+            resetSubscriptionState(sub, currentDimension);
         }
 
         sub.centerChunkX = centerChunkX;
@@ -167,6 +175,18 @@ public final class ServerNetworkManager {
         sub.pendingRegionJobs.addAll(newlyAdded);
     }
 
+    private static void resetSubscriptionState(PlayerSubscription sub, ResourceKey<Level> dimension) {
+        sub.dimension = dimension;
+        sub.desiredRegions.clear();
+        sub.streamingRegions.clear();
+        sub.syncedRegions.clear();
+        sub.bufferedDeltas.clear();
+        synchronized (sub.pendingRegionJobs) {
+            sub.pendingRegionJobs.clear();
+        }
+        sub.pendingPackets.clear();
+    }
+
     public void tick(ServerLevel level) {
         ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
         if (index == null) {
@@ -176,6 +196,14 @@ public final class ServerNetworkManager {
         Set<Long> allActiveRegionsInLevel = new HashSet<>();
         for (PlayerSubscription sub : subscriptions.values()) {
             if (sub.player.level() == level && sub.helloAccepted) {
+                if (!level.dimension().equals(sub.dimension)) {
+                    updateSubscriptions(
+                        sub.player,
+                        sub.player.getBlockX() >> 4,
+                        sub.player.getBlockZ() >> 4,
+                        sub.radiusChunks
+                    );
+                }
                 allActiveRegionsInLevel.addAll(sub.desiredRegions);
             }
         }
@@ -316,7 +344,10 @@ public final class ServerNetworkManager {
         long regionKey = ServerDecorationWorldIndex.packRegionKey(regionX, regionZ);
 
         for (PlayerSubscription sub : subscriptions.values()) {
-            if (sub.player.level().dimension() != dim || !sub.helloAccepted || !sub.desiredRegions.contains(regionKey)) {
+            if (!sub.player.level().dimension().equals(dim)
+                    || !sub.dimension.equals(dim)
+                    || !sub.helloAccepted
+                    || !sub.desiredRegions.contains(regionKey)) {
                 continue;
             }
 

@@ -18,6 +18,8 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.Level;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,6 +29,7 @@ public final class ClientNetworkManager {
 
     private int lastChunkX = Integer.MIN_VALUE;
     private int lastChunkZ = Integer.MIN_VALUE;
+    private ResourceKey<Level> lastDimension = null;
 
     private boolean helloSent = false;
 
@@ -72,6 +75,9 @@ public final class ClientNetworkManager {
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             DecorationRenderManager.getInstance().clearAll();
             helloSent = false;
+            lastChunkX = Integer.MIN_VALUE;
+            lastChunkZ = Integer.MIN_VALUE;
+            lastDimension = null;
             sendClientHello();
         });
 
@@ -80,6 +86,7 @@ public final class ClientNetworkManager {
             helloSent = false;
             lastChunkX = Integer.MIN_VALUE;
             lastChunkZ = Integer.MIN_VALUE;
+            lastDimension = null;
         });
 
         net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents.CHUNK_LOAD.register((world, chunk) -> {
@@ -98,7 +105,11 @@ public final class ClientNetworkManager {
 
                 int cx = client.player.getBlockX() >> 4;
                 int cz = client.player.getBlockZ() >> 4;
-                if (Math.abs(cx - lastChunkX) >= 2 || Math.abs(cz - lastChunkZ) >= 2) {
+                ResourceKey<Level> dimension = client.level.dimension();
+                if (!dimension.equals(lastDimension)
+                        || Math.abs(cx - lastChunkX) >= 2
+                        || Math.abs(cz - lastChunkZ) >= 2) {
+                    lastDimension = dimension;
                     lastChunkX = cx;
                     lastChunkZ = cz;
                     sendSubscriptionUpdate(cx, cz);
@@ -114,6 +125,7 @@ public final class ClientNetworkManager {
         if (client.player != null && client.level != null && helloSent) {
             int cx = client.player.getBlockX() >> 4;
             int cz = client.player.getBlockZ() >> 4;
+            lastDimension = client.level.dimension();
             lastChunkX = cx;
             lastChunkZ = cz;
             sendSubscriptionUpdate(cx, cz);

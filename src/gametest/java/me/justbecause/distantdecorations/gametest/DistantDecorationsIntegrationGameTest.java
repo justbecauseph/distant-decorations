@@ -54,7 +54,7 @@ public class DistantDecorationsIntegrationGameTest {
 
             @Override
             public boolean matches(BlockEntity blockEntity) {
-                return true;
+                return false;
             }
 
             @Override
@@ -71,6 +71,62 @@ public class DistantDecorationsIntegrationGameTest {
 
         ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
         helper.assertTrue(index != null, "DistantDecorations server index is null");
+
+        helper.succeed();
+    }
+
+    @GameTest
+    public void testBlockEntityLifecycleRemovalDoesNotDeletePersistentRecord(GameTestHelper helper) {
+        BlockPos relativePos = new BlockPos(2, 2, 2);
+        helper.setBlock(relativePos, Blocks.CHEST);
+
+        ServerLevel level = helper.getLevel();
+        BlockPos absolutePos = helper.absolutePos(relativePos);
+        BlockEntity blockEntity = level.getBlockEntity(absolutePos);
+        helper.assertTrue(blockEntity != null, "Chest block entity was not created");
+
+        Identifier typeId = DistantDecorations.id("unload_persistence_test");
+        DecorationType<String> type = new DecorationType<>(
+            typeId,
+            (data, buf) -> buf.writeUtf(data),
+            buf -> buf.readUtf()
+        );
+        DecorationRegistry.registerProvider(new DecorationProvider<String>() {
+            @Override
+            public DecorationType<String> type() {
+                return type;
+            }
+
+            @Override
+            public boolean matches(BlockEntity candidate) {
+                return candidate.getBlockState().is(Blocks.CHEST);
+            }
+
+            @Override
+            public String capture(ServerLevel serverLevel, BlockPos pos, BlockEntity candidate) {
+                return "persistent";
+            }
+
+            @Override
+            public AABB calculateBounds(ServerLevel serverLevel, BlockPos pos, String data) {
+                return new AABB(pos);
+            }
+        });
+
+        ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
+        helper.assertTrue(index != null, "DistantDecorations server index is null");
+        DecorationRecord record = index.publish(absolutePos, blockEntity);
+        helper.assertTrue(record != null, "Test decoration was not published");
+
+        // Chunk unloading marks its block entities removed without meaning the backing block was destroyed.
+        blockEntity.setRemoved();
+        int regionX = ServerDecorationWorldIndex.chunkToRegionCoord(absolutePos.getX() >> 4);
+        int regionZ = ServerDecorationWorldIndex.chunkToRegionCoord(absolutePos.getZ() >> 4);
+        helper.assertTrue(
+            index.getRegion(regionX, regionZ).getRecord(record.id()) != null,
+            "BlockEntity.setRemoved() deleted a persistent decoration record"
+        );
+        blockEntity.clearRemoved();
 
         helper.succeed();
     }

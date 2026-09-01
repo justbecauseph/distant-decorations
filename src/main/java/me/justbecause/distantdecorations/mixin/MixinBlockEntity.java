@@ -30,10 +30,4 @@ public abstract class MixinBlockEntity {
         }
     }
 
-    @Inject(method = "setRemoved", at = @At("HEAD"))
-    private void dd$onSetRemoved(CallbackInfo ci) {
-        if (this.level instanceof ServerLevel serverLevel) {
-            ServerDecorationManager.getInstance().remove(serverLevel, this.worldPosition);
-        }
-    }
 }
