@@ -3,17 +3,17 @@
 ## Executive Summary & Status
 
 - **Current Branch**: `port/minecraft-26.3`
-- **Starting Revision**: `91238d40ed70779f0e5172c0808fe0b7fc03bb79` (derived from inspected revision `1a7fba91c3561a3264e6d2ffce68b146f02f5930`)
-- **Current Phase**: Phase 0 Complete, Phase 1 & Phase 1.1 Complete (Persistence, Lifecycle, Dependency, and Test Hardening).
-- **Review Gate**: Keeping Minecraft at `26.2` for baseline verification before initiating Phase 2 (26.3 dependency/API port).
+- **Accepted Baseline Checkpoint**: `d58f354fa8ad5778dcb6da289002cad9a93dd7c9` (Minecraft 26.2)
+- **Current Phase**: Phase 2 Complete (26.3 Toolchain Pinning & Compilation / API-Delta Inventory).
+- **Review Gate**: Phase 2 Toolchain/API-Inventory Gate.
 - **Toolchain Tuple Reconciliation**:
   - JDK: `25.0.4+7-LTS` (Azul Zulu, `C:\Program Files\Zulu\zulu-25`)
   - Gradle: `9.5.1`
-  - Loom: `1.17.20` (`1.17-SNAPSHOT`)
-  - Target Minecraft: `26.2`
-  - Mod Version: `0.2.0`
-  - *Initial Phase 0 Inspected Baseline*: Fabric Loader `0.19.3` / Fabric API `0.158.0+26.2`
-  - *Reviewed Baseline (commit `24410a0`)*: Fabric Loader `0.19.5` / Fabric API `0.160.0+26.2`
+  - Loom: `1.17.20` (Explicitly pinned, replacing `1.17-SNAPSHOT`)
+  - Target Minecraft: `26.3-rc-2` (Fabric Loader SemVer normalized: `26.3-rc.2`)
+  - Target Fabric Loader: `0.19.5`
+  - Target Fabric API: `0.160.4+26.3`
+  - Target Mod Version: `0.3.0-rc2`
 
 ---
 
@@ -246,6 +246,103 @@ Following peer review of commit `50ae8ac`, a targeted Phase 1.2 pass was complet
 
 ---
 
+## Phase 2 — 26.3 Toolchain Pinning & Compilation / API-Delta Inventory
+
+### 1. Declared & Resolved Toolchain
+- **Target Minecraft Version**: `26.3-rc-2` (Mojang RC-2, September 11, 2026).
+  - Fabric Loader internal normalization: `26.3-rc.2`.
+- **Target Fabric Loader**: `0.19.5`.
+- **Target Fabric API**: `0.160.4+26.3`.
+- **Loom Plugin**: `1.17.20` (explicitly pinned from previously floating `1.17-SNAPSHOT`).
+- **Mod Version**: `0.3.0-rc2`.
+- **JDK / Language Level**: Java 25 (`25.0.4+7-LTS`, Azul Zulu).
+- **Gradle**: `9.5.1`.
+
+### 2. Manifest Alignment (`fabric.mod.json`)
+- Updated `src/main/resources/fabric.mod.json` `depends.minecraft` to `"26.3-rc.2"`.
+- Fabric Loader requires SemVer compliance (`26.3-rc.2` rather than `26.3-rc-2`); tested and verified during `runGameTest` launch.
+- Expanded manifest in `build/resources/main/fabric.mod.json`:
+  - `"version": "0.3.0-rc2"`
+  - `"minecraft": "26.3-rc.2"`
+  - `"fabricloader": ">=0.19.3"`
+  - `"java": ">=25"`
+  - `"fabric-api": "*"`
+
+### 3. Source Generation (`./gradlew genSources`)
+- Decompiled and mapped Minecraft 26.3-rc-2:
+  - `genCommonSourcesWithVineflower`: 5,037 hits, 0 misses.
+  - `genClientOnlySourcesWithVineflower`: 2,264 hits, 0 misses.
+  - Task completed in 10s.
+
+### 4. Compilation Inventory by Source Set
+- **`main` (`compileJava`)**: **PASS (0 errors)**. All server, storage, networking, telemetry, and common core APIs compile cleanly on Minecraft 26.3-rc-2 and Fabric API 0.160.4+26.3 without modifications.
+- **`client` (`compileClientJava`)**: **PASS (0 errors)**. All client renderers, spatial indexing, frustum culling, and client network handlers compile cleanly.
+- **`gametest` (`compileGametestJava`)**: **PASS (0 errors)**. Integration GameTest suite compiles cleanly.
+- **`test` (`compileTestJava`)**: **FAILED (1 error)**.
+  - **Location**: `CommandAuthorizationRegressionTest.java:75`.
+  - **Symbol**: `new CommandSourceStack(CommandSource, Vec3, Vec2, ServerLevel, PermissionSet, String, Component, MinecraftServer, Entity)`.
+  - **Error**: `no suitable constructor found for CommandSourceStack(CommandSource,Vec3,Vec2,<null>,PermissionSet,String,MutableComponent,<null>,<null>)`.
+  - **Category**: **Minecraft API Change**.
+  - **Root Cause & Delta**: In Minecraft 26.3-rc-2, Mojang refactored `CommandSourceStack` constructors from 9 parameters down to 7 parameters, dropping the separate `String textName` parameter and consolidating under `Component displayName` (constructor: `CommandSourceStack(CommandSource, Vec3, Vec2, ServerLevel, PermissionSet, Component, MinecraftServer)`).
+  - **Action**: Deferred to Phase 3 API adaptation. Existing tests remain intact per Phase 2 instructions.
+- **`test` Execution (`:test`)**: **BLOCKED** by compilation failure in `CommandAuthorizationRegressionTest`.
+
+### 5. Automated Test Outcomes
+- **GameTests (`runGameTest`)**: **PASS (4/4 passed)**.
+  - Executed on live 26.3-rc-2 test server:
+    - `ALWAYS_PASS`: PASSED
+    - `testProviderCaptureAndPublish`: PASSED (captured and verified `Blocks.BARREL` entity)
+    - `testBlockEntityLifecycleRemovalDoesNotDeletePersistentRecord`: PASSED
+    - `testVoxyCoexistence`: PASSED
+  - Shutdown persistence: All world indices saved cleanly without errors.
+- **Unit Tests (`test`)**: Blocked pending Phase 3 constructor adaptation.
+
+### 6. Publication & Dependency Isolation Verification
+- Verified with `./gradlew generatePomFileForMavenJavaPublication generateMetadataFileForMavenJavaPublication`:
+  - With `-PenableBenchmarkMods=false`: POM (`pom-default.xml`) and Gradle metadata (`module.json`) contain strictly `fabric-loader:0.19.5` and `fabric-api:0.160.4+26.3`.
+  - With `-PenableBenchmarkMods=true`: Verified `benchmarkRuntime` isolation; POM and module metadata remain clean with zero benchmark dependency leakage.
+
+---
+
+## Current Test Inventory & Verification Matrix
+
+| Test Suite | File | Tests Run | Result | Notes |
+|---|---|---|---|---|
+| Core API | `CoreApiTest.java` | 5 | BLOCKED | Compilation blocked by `CommandAuthorizationRegressionTest.java` |
+| Scale Benchmark | `ScaleBenchmarkTest.java` | 4 | BLOCKED | Compilation blocked by `CommandAuthorizationRegressionTest.java` |
+| Provider Test | `ProviderTest.java` | 3 | BLOCKED | Compilation blocked by `CommandAuthorizationRegressionTest.java` |
+| Server Storage & Net | `ServerStorageAndNetworkTest.java` | 8 | BLOCKED | Compilation blocked by `CommandAuthorizationRegressionTest.java` |
+| Spatial Index | `SpatialIndexTest.java` | 10 | BLOCKED | Compilation blocked by `CommandAuthorizationRegressionTest.java` |
+| Command Authorization | `CommandAuthorizationRegressionTest.java` | 6 | BLOCKED | **Compile error**: `CommandSourceStack` constructor signature changed in 26.3-rc-2 |
+| Storage Safety | `StorageSafetyRegressionTest.java` | 13 | BLOCKED | Compilation blocked by `CommandAuthorizationRegressionTest.java` |
+| **Total Unit Tests** | | **49** | **BLOCKED** | Blocked at `compileTestJava` (1 error) |
+| Integration GameTests | `DistantDecorationsIntegrationGameTest.java` | 4 | **PASS** | Complete live execution on 26.3-rc-2 passing (4/4) |
+
+---
+
+## Contract Inventory & Risk Assessment
+
+### 1. Java Provider API Contract [S11]
+- **Interface**: `DecorationClientRenderer<T>` and `DecorationProvider<T>`
+- **Exposed Types**: `net.minecraft.client.renderer.SubmitNodeCollector`, `com.mojang.blaze3d.vertex.PoseStack`, `me.justbecause.distantdecorations.client.spatial.ProjectionMetrics`.
+- **Status in 26.3-rc-2**: Fully compatible. No compilation breaks in provider or client interfaces.
+
+### 2. Wire Protocol Contract [S5, S6, S7]
+- **Current Version**: `ServerNetworkManager.PROTOCOL_VERSION = 1`
+- **Envelope Assessment**:
+  - `S2CRegionSnapshot`, `S2CRegionDelta`, `S2CRegionUnload` payloads compile and remain stable.
+
+### 3. Disk Storage Format Contract [S12]
+- **Current Format**: `ServerDecorationRegion.FORMAT_VERSION = 1`
+- **Magic**: `0x4445434F` (`DECO`)
+- **Status in 26.3-rc-2**: Intact. All serialization and quarantine logic compiled cleanly.
+
+### 4. Rendering Extraction vs Submission Boundary [S9, S10]
+- **Current Hook**: `LevelRenderEvents.COLLECT_SUBMITS`
+- **Status in 26.3-rc-2**: Compiles and functions cleanly with Fabric API `0.160.4+26.3`.
+
+---
+
 ## Git Commit History on `port/minecraft-26.3`
 
 1. `8f8099a` — `test: establish standalone DD baseline and lifecycle fixtures`
@@ -254,17 +351,19 @@ Following peer review of commit `50ae8ac`, a targeted Phase 1.2 pass was complet
 4. `c89dfac` — `docs: record Phase 0 baseline and Phase 1 regression evidence in PROGRESS.md`
 5. `50ae8ac` — `fix: harden quarantine, command tests, provider assertions, and benchmark isolation`
 6. `aa63c38` — `fix: contain network storage errors, isolate storage recovery, and classify read errors`
+7. `d58f354` — `fix: contain malformed stored identifiers and prove network work budget` (Accepted Phase 1.3 Checkpoint)
+8. `11ae2bc` — `docs: restore baseline progress documentation`
 
 ---
 
-## Review Gate Sign-off (Phase 0, Phase 1, Phase 1.1, Phase 1.2 & Phase 1.3)
+## Review Gate Sign-off (Phase 2 — Toolchain & API-Inventory Gate)
 
-- [x] Baseline and regression test counts recorded and passing (49 unit tests, 4 GameTests = 53 automated tests).
-- [x] Malformed stored identifiers diagnosed and quarantined as malformed storage data; raw `IdentifierException` prevented from escaping into chunk reconciliation or publishing.
-- [x] Network tick contains storage exceptions, enforces budget consumption with 3-region queue proof, fixed 3s retry delay, and clean out-of-range bookkeeping.
-- [x] Storage recovery keyed by normalized path; single-writer protection prevents concurrent / split-brain opens against unresolved storage.
-- [x] Read/access errors classified as `READ_ERROR` without quarantine; quarantine strictly reserved for diagnosed corruption.
-- [x] Benchmark dependencies structurally isolated in `benchmarkRuntime` configuration; POM and module metadata verified clean under both `-PenableBenchmarkMods=false` and `-PenableBenchmarkMods=true`.
-- [x] Command authorization verified via Brigadier for `/dd toggle` (exact GAMEMASTER level 2 requirement) and `/ddc toggle` (independent client switch under both server states).
-- [x] Minecraft version strictly preserved at `26.2` for baseline gate.
-- [x] Ready for Phase 2 toolchain and dependency bump to 26.3 upon user approval.
+- [x] Baseline checkpoint established at `d58f354fa8ad5778dcb6da289002cad9a93dd7c9`.
+- [x] Target toolchain resolved and pinned: `minecraft_version=26.3-rc-2`, `fabric_api_version=0.160.4+26.3`, `mod_version=0.3.0-rc2`, `loom_version=1.17.20`.
+- [x] Manifest aligned: `fabric.mod.json` pinned to Fabric-normalized SemVer `"minecraft": "26.3-rc.2"`; expanded manifest verified.
+- [x] Sources generated: `./gradlew genSources` completed cleanly.
+- [x] Honest compilation inventory recorded across all source sets (`main`: PASS, `client`: PASS, `gametest`: PASS, `test`: FAILED with 1 Minecraft API change in `CommandSourceStack`).
+- [x] Dependent test source set marked as blocked rather than falsely reported as passed; existing tests preserved intact.
+- [x] GameTest execution rerun and verified passing (4/4) on live 26.3-rc-2 server.
+- [x] Benchmark dependency isolation preserved and POM/module metadata verified clean under both flags.
+- [x] Ready for Phase 3 API adaptation upon user review.
