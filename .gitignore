@@ -14,3 +14,4 @@ libs/
 .settings/
 .DS_Store
 run-integration
+PLAN.md
