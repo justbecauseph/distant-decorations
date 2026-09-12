@@ -176,6 +176,32 @@ Following peer review of commit `50ae8ac`, a targeted Phase 1.2 pass was complet
   - `loadRegionFromFile()` throws `RegionStorageException` on `READ_ERROR` and `QUARANTINE_FAILED` rather than returning `null`.
   - Added regression test `testAccessDeniedProducesReadErrorWithoutQuarantine()`: verifies `READ_ERROR`, no `.corrupt.` file created, region marked blocked, `getOrCreateRegion()` throws `RegionStorageException`, `saveRegionToFile()` refuses overwrite, and original file bytes remain intact.
 
+### 4. Malformed Stored Identifier Containment (P1)
+- **Finding**: While narrowing `loadRegionFromFileWithResult()` exceptions in Phase 1.2, unchecked `net.minecraft.IdentifierException` thrown by `Identifier.parse()` during stream decoding bypassed corruption classification. When `getOrCreateRegion()` rethrew this exception, it escaped chunk reconciliation and block-entity publishing, which only caught `RegionStorageException`.
+- **Remediation**:
+  - In `DecorationId.readFromStream(DataInput in)`: `Identifier.parse()` calls for decoration type and dimension are wrapped in `try-catch (IdentifierException e)`. Failures are translated to `IOException` with the explicit malformed string (`"Malformed stored decoration type identifier: '...'"` and `"Malformed stored dimension identifier: '...'"`).
+  - In `ServerDecorationWorldIndex`:
+    - `isDiagnosedCorruption(IOException e)` checks for `e.getCause() instanceof IdentifierException` and `msg.contains("Malformed stored")`.
+    - `loadRegionFromFileWithResult()` explicitly catches `EOFException | UTFDataFormatException | IdentifierException` as diagnosed corruption.
+    - Diagnosed corruption invokes `handleDiagnosedCorruption()`, moving the file to quarantine and returning a clean new region, preventing any exception from escaping to callers.
+    - If quarantine move fails, the region is marked blocked and throws `RegionStorageException`, which is safely caught and contained by `reconcileChunk()` and `publishTyped()`.
+  - Added regression tests in `StorageSafetyRegressionTest`:
+    - `testMalformedStoredDecorationTypeIdentifierIsQuarantined()`: writes raw format-1 binary with invalid decoration type string (`"INVALID DECO TYPE UPPERCASE & SPACES!"`). Verifies diagnosed quarantine, original bytes preserved in quarantine file, and clean region returned without throwing.
+    - `testMalformedStoredDimensionIdentifierIsQuarantined()`: writes raw format-1 binary with invalid dimension identifier string. Verifies diagnosed quarantine and original byte preservation.
+    - `testMalformedIdentifierWithQuarantineFailureBlocksRegionAndRefusesSave()`: tests quarantine move failure hook on a malformed identifier file; verifies `RegionStorageException` is thrown (no raw `IdentifierException` escapes), region is marked blocked, original file remains intact, and replacement saves are refused.
+
+### 5. Non-Blocking Retry Bookkeeping & Budget Proof Regression
+- **Clarified Retry Policy**:
+  - The retry interval is a fixed 3-second delay (`FAILED_JOB_RETRY_BACKOFF_MS = 3000L`), not exponential backoff.
+  - Regions marked in `blockedRegions` remain blocked until explicit recovery or index recreation; network retries attempt loading up to `MAX_REGION_JOB_RETRIES = 3` and then abandon the job.
+- **Subscription Unload Bookkeeping**:
+  - In `ServerNetworkManager.updateSubscriptions()`, when an out-of-range region is evicted from `desiredRegions`, `failedJobRetries.remove(key)` and `retryAfterTimestamp.remove(key)` are explicitly called, ensuring re-subscribed regions start with clean state.
+- **Network Budget Proof Regression**:
+  - Strengthened `testBlockedRegionDoesNotThrowDuringNetworkTickAndPermitsHealthyJobs()` in `ServerStorageAndNetworkTest`: enqueues blocked region A, healthy region B, and healthy region C against the 2-region tick limit.
+  - Tick 1 proves budget consumption: blocked A fails (consumes 1 attempt), healthy B succeeds (consumes 2nd attempt), and healthy C remains pending because the budget was exhausted.
+  - Tick 2: healthy C is processed and synced, while blocked A remains deferred in cooldown.
+  - *Note*: Test uses synthetic subscription to verify shared queue-processing and synchronization state without live network client.
+
 ---
 
 ## Current Test Inventory & Verification Matrix
@@ -185,13 +211,13 @@ Following peer review of commit `50ae8ac`, a targeted Phase 1.2 pass was complet
 | Core API | `CoreApiTest.java` | 5 | PASS | Type encoding, ID equality/hash, payload limits, network & stream codecs |
 | Scale Benchmark | `ScaleBenchmarkTest.java` | 4 | PASS | Snapshot materialization, disk I/O, thumbnail invariant, render traversal |
 | Provider Test | `ProviderTest.java` | 3 | PASS | Painting & picture frame data serialization, registry registration |
-| Server Storage & Net | `ServerStorageAndNetworkTest.java` | 8 | PASS | C2S/S2C packet roundtrips, region streams, maintenance tick throttle, **network tick containment with retry backoff** |
+| Server Storage & Net | `ServerStorageAndNetworkTest.java` | 8 | PASS | C2S/S2C packet roundtrips, region streams, maintenance throttle, **network tick containment with 3-region budget proof** |
 | Spatial Index | `SpatialIndexTest.java` | 10 | PASS | Frustum culling, cell partitioning, multipart assembly, top-K selection |
 | Command Authorization | `CommandAuthorizationRegressionTest.java` | 6 | PASS | Brigadier client toggle (both server switch states), exact GAMEMASTER permission boundary |
-| Storage Safety | `StorageSafetyRegressionTest.java` | 10 | PASS | Dirty retention, quarantine move, quarantine failure overwrite block, access denied classification without quarantine, storage-keyed recovery isolation, single-writer protection, clean shutdown, recovery shutdown flush |
-| **Total Unit Tests** | | **46** | **PASS** | `BUILD SUCCESSFUL in 11s` |
+| Storage Safety | `StorageSafetyRegressionTest.java` | 13 | PASS | Dirty retention, quarantine move, quarantine failure overwrite block, access denied classification, storage-keyed recovery isolation, single-writer protection, clean shutdown, recovery shutdown flush, **malformed type identifier quarantine, malformed dimension identifier quarantine, malformed quarantine failure block** |
+| **Total Unit Tests** | | **49** | **PASS** | `BUILD SUCCESSFUL in 12s` |
 | Integration GameTests | `DistantDecorationsIntegrationGameTest.java` | 4 | PASS | Minecraft `ALWAYS_PASS`, truthful barrel publish/payload/bounds/revision/remove, lifecycle persistence, index init |
-| **Total Automated Tests** | | **50** | **PASS** | Complete unit and GameTest suite passing |
+| **Total Automated Tests** | | **53** | **PASS** | Complete unit and GameTest suite passing |
 
 ---
 
@@ -227,13 +253,15 @@ Following peer review of commit `50ae8ac`, a targeted Phase 1.2 pass was complet
 3. `80a8f80` — `fix: authorize DD server controls and retain failed-save regions`
 4. `c89dfac` — `docs: record Phase 0 baseline and Phase 1 regression evidence in PROGRESS.md`
 5. `50ae8ac` — `fix: harden quarantine, command tests, provider assertions, and benchmark isolation`
+6. `aa63c38` — `fix: contain network storage errors, isolate storage recovery, and classify read errors`
 
 ---
 
-## Review Gate Sign-off (Phase 0, Phase 1, Phase 1.1 & Phase 1.2)
+## Review Gate Sign-off (Phase 0, Phase 1, Phase 1.1, Phase 1.2 & Phase 1.3)
 
-- [x] Baseline and regression test counts recorded and passing (46 unit tests, 4 GameTests = 50 automated tests).
-- [x] Network tick contains storage exceptions, enforces budget consumption, deferred backoff retry, and prevents empty snapshots / false syncs.
+- [x] Baseline and regression test counts recorded and passing (49 unit tests, 4 GameTests = 53 automated tests).
+- [x] Malformed stored identifiers diagnosed and quarantined as malformed storage data; raw `IdentifierException` prevented from escaping into chunk reconciliation or publishing.
+- [x] Network tick contains storage exceptions, enforces budget consumption with 3-region queue proof, fixed 3s retry delay, and clean out-of-range bookkeeping.
 - [x] Storage recovery keyed by normalized path; single-writer protection prevents concurrent / split-brain opens against unresolved storage.
 - [x] Read/access errors classified as `READ_ERROR` without quarantine; quarantine strictly reserved for diagnosed corruption.
 - [x] Benchmark dependencies structurally isolated in `benchmarkRuntime` configuration; POM and module metadata verified clean under both `-PenableBenchmarkMods=false` and `-PenableBenchmarkMods=true`.

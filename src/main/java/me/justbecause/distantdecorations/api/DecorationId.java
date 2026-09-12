@@ -1,5 +1,6 @@
 package me.justbecause.distantdecorations.api;
 
+import net.minecraft.IdentifierException;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.FriendlyByteBuf;
@@ -45,8 +46,22 @@ public record DecorationId(
     }
 
     public static DecorationId readFromStream(DataInput in) throws IOException {
-        Identifier type = Identifier.parse(in.readUTF());
-        Identifier dimLoc = Identifier.parse(in.readUTF());
+        String typeStr = in.readUTF();
+        Identifier type;
+        try {
+            type = Identifier.parse(typeStr);
+        } catch (IdentifierException e) {
+            throw new IOException("Malformed stored decoration type identifier: '" + typeStr + "'", e);
+        }
+
+        String dimStr = in.readUTF();
+        Identifier dimLoc;
+        try {
+            dimLoc = Identifier.parse(dimStr);
+        } catch (IdentifierException e) {
+            throw new IOException("Malformed stored dimension identifier: '" + dimStr + "'", e);
+        }
+
         ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION, dimLoc);
         int x = in.readInt();
         int y = in.readInt();

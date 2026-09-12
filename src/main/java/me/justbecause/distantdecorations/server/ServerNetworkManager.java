@@ -147,7 +147,11 @@ public final class ServerNetworkManager {
                 sub.syncedRegions.remove(key);
                 sub.streamingRegions.remove(key);
                 sub.bufferedDeltas.remove(key);
-                sub.pendingRegionJobs.remove(key);
+                sub.failedJobRetries.remove(key);
+                sub.retryAfterTimestamp.remove(key);
+                synchronized (sub.pendingRegionJobs) {
+                    sub.pendingRegionJobs.remove(key);
+                }
                 sub.pendingPackets.removeIf(pkt -> ServerDecorationWorldIndex.packRegionKey(pkt.regionX(), pkt.regionZ()) == key);
 
                 int rx = (int) (key >> 32);

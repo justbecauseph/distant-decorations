@@ -12,6 +12,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.IdentifierException;
 import net.minecraft.world.phys.AABB;
 import org.jetbrains.annotations.Nullable;
 
@@ -402,7 +403,7 @@ public class ServerDecorationWorldIndex {
         try (DataInputStream dis = new DataInputStream(new BufferedInputStream(in))) {
             ServerDecorationRegion loaded = ServerDecorationRegion.readFromStream(dis);
             return RegionLoadResult.success(loaded);
-        } catch (EOFException | UTFDataFormatException e) {
+        } catch (EOFException | UTFDataFormatException | IdentifierException e) {
             return handleDiagnosedCorruption(rx, rz, path, e);
         } catch (IOException e) {
             if (isDiagnosedCorruption(e)) {
@@ -416,13 +417,17 @@ public class ServerDecorationWorldIndex {
     }
 
     private boolean isDiagnosedCorruption(IOException e) {
+        if (e.getCause() instanceof IdentifierException) {
+            return true;
+        }
         String msg = e.getMessage();
         if (msg == null) {
             return false;
         }
         return msg.contains("Invalid region file magic")
             || msg.contains("Unsupported region format version")
-            || msg.contains("Invalid or corrupted decoration payload length");
+            || msg.contains("Invalid or corrupted decoration payload length")
+            || msg.contains("Malformed stored");
     }
 
     private RegionLoadResult handleDiagnosedCorruption(int rx, int rz, Path path, Throwable cause) {

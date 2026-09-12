@@ -224,58 +224,75 @@ public class ServerStorageAndNetworkTest {
 
             // Region (1, 1) is blocked (simulate prior quarantine or read error)
             index.blockRegionForTesting(1, 1);
-            long blockedKey = ServerDecorationWorldIndex.packRegionKey(1, 1);
+            long blockedKeyA = ServerDecorationWorldIndex.packRegionKey(1, 1);
 
-            // Region (2, 2) is healthy and populated
-            long healthyKey = ServerDecorationWorldIndex.packRegionKey(2, 2);
-            ServerDecorationRegion healthyRegion = index.getOrCreateRegion(2, 2);
+            // Region (2, 2) is healthy region B
+            long healthyKeyB = ServerDecorationWorldIndex.packRegionKey(2, 2);
+            ServerDecorationRegion healthyRegionB = index.getOrCreateRegion(2, 2);
             Identifier type = Identifier.fromNamespaceAndPath("test", "painting");
-            BlockPos pos = new BlockPos(2 * 512 + 10, 64, 2 * 512 + 10);
-            DecorationId id = new DecorationId(type, dim, pos);
-            AABB bounds = new AABB(pos.getX(), 64.0, pos.getZ(), pos.getX() + 1, 65.0, pos.getZ() + 0.1);
-            healthyRegion.addOrUpdate(new DecorationRecord(id, bounds, 1L, new byte[]{1, 2, 3}));
+            BlockPos posB = new BlockPos(2 * 512 + 10, 64, 2 * 512 + 10);
+            DecorationId idB = new DecorationId(type, dim, posB);
+            AABB boundsB = new AABB(posB.getX(), 64.0, posB.getZ(), posB.getX() + 1, 65.0, posB.getZ() + 0.1);
+            healthyRegionB.addOrUpdate(new DecorationRecord(idB, boundsB, 1L, new byte[]{1, 2, 3}));
+
+            // Region (3, 3) is healthy region C
+            long healthyKeyC = ServerDecorationWorldIndex.packRegionKey(3, 3);
+            ServerDecorationRegion healthyRegionC = index.getOrCreateRegion(3, 3);
+            BlockPos posC = new BlockPos(3 * 512 + 10, 64, 3 * 512 + 10);
+            DecorationId idC = new DecorationId(type, dim, posC);
+            AABB boundsC = new AABB(posC.getX(), 64.0, posC.getZ(), posC.getX() + 1, 65.0, posC.getZ() + 0.1);
+            healthyRegionC.addOrUpdate(new DecorationRecord(idC, boundsC, 1L, new byte[]{4, 5, 6}));
 
             UUID playerId = UUID.randomUUID();
             netManager.registerTestSubscription(playerId, dim, true);
 
-            // Enqueue both the blocked region and the healthy region
-            netManager.enqueuePendingJobForTesting(playerId, blockedKey);
-            netManager.enqueuePendingJobForTesting(playerId, healthyKey);
+            // Enqueue: blocked A, healthy B, healthy C (budget limit is 2 regions per tick)
+            netManager.enqueuePendingJobForTesting(playerId, blockedKeyA);
+            netManager.enqueuePendingJobForTesting(playerId, healthyKeyB);
+            netManager.enqueuePendingJobForTesting(playerId, healthyKeyC);
 
             // Tick 1: Network tick MUST NOT throw RegionStorageException!
             assertDoesNotThrow(() -> netManager.tick(dim), "Network tick must contain RegionStorageException");
 
-            // Assertions for blocked region
-            assertFalse(netManager.isRegionSyncedForTesting(playerId, blockedKey), "Blocked region must NOT be marked synced");
-            assertFalse(netManager.isRegionStreamingForTesting(playerId, blockedKey), "Blocked region must NOT be marked streaming");
-            assertEquals(1, netManager.getFailedAttemptsForTesting(playerId, blockedKey), "Blocked region should have 1 failed attempt recorded");
-            assertTrue(netManager.isRegionPendingForTesting(playerId, blockedKey), "Blocked region should be deferred back to pending jobs");
+            // Assertions after Tick 1:
+            // - Blocked A consumed 1 budget, failed, and is deferred
+            assertFalse(netManager.isRegionSyncedForTesting(playerId, blockedKeyA), "Blocked region A must NOT be marked synced");
+            assertFalse(netManager.isRegionStreamingForTesting(playerId, blockedKeyA), "Blocked region A must NOT be marked streaming");
+            assertEquals(1, netManager.getFailedAttemptsForTesting(playerId, blockedKeyA), "Blocked region A should have 1 failed attempt recorded");
+            assertTrue(netManager.isRegionPendingForTesting(playerId, blockedKeyA), "Blocked region A should be deferred back to pending jobs");
 
-            // Assertions for healthy region: should have progressed to synced
-            assertTrue(netManager.isRegionSyncedForTesting(playerId, healthyKey), "Healthy region should progress to synced in the tick");
-            assertFalse(netManager.isRegionPendingForTesting(playerId, healthyKey), "Healthy region should no longer be pending");
+            // - Healthy B consumed 2nd budget slot, succeeded, and progressed to synced
+            assertTrue(netManager.isRegionSyncedForTesting(playerId, healthyKeyB), "Healthy region B should progress to synced in tick 1");
+            assertFalse(netManager.isRegionPendingForTesting(playerId, healthyKeyB), "Healthy region B should no longer be pending");
 
-            // Tick 2: Blocked region is in retry cooldown (3000ms), so ticking immediately must NOT re-attempt it
+            // - Healthy C could NOT be attempted in Tick 1 because budget (2) was consumed by A + B!
+            assertFalse(netManager.isRegionSyncedForTesting(playerId, healthyKeyC), "Healthy region C must NOT be synced after tick 1 (budget exhausted by A+B)");
+            assertFalse(netManager.isRegionStreamingForTesting(playerId, healthyKeyC), "Healthy region C must NOT be streaming after tick 1");
+            assertTrue(netManager.isRegionPendingForTesting(playerId, healthyKeyC), "Healthy region C must remain pending after tick 1 proves budget consumption");
+
+            // Tick 2: Blocked A is in retry cooldown (3000ms), so healthy C can now be processed within budget
             netManager.tick(dim);
-            assertEquals(1, netManager.getFailedAttemptsForTesting(playerId, blockedKey), "Cooldown must prevent premature retry");
+            assertEquals(1, netManager.getFailedAttemptsForTesting(playerId, blockedKeyA), "Cooldown must prevent premature retry of A");
+            assertTrue(netManager.isRegionSyncedForTesting(playerId, healthyKeyC), "Healthy region C should complete and be synced in tick 2");
+            assertFalse(netManager.isRegionPendingForTesting(playerId, healthyKeyC), "Healthy region C should no longer be pending after tick 2");
 
-            // Clear cooldown to simulate backoff expiration and tick 2nd time
-            netManager.clearRetryCooldownForTesting(playerId, blockedKey);
+            // Clear cooldown to simulate backoff expiration and tick 2nd attempt for A
+            netManager.clearRetryCooldownForTesting(playerId, blockedKeyA);
             netManager.tick(dim);
-            assertEquals(2, netManager.getFailedAttemptsForTesting(playerId, blockedKey), "Attempt 2 should be recorded");
-            assertTrue(netManager.isRegionPendingForTesting(playerId, blockedKey));
+            assertEquals(2, netManager.getFailedAttemptsForTesting(playerId, blockedKeyA), "Attempt 2 should be recorded");
+            assertTrue(netManager.isRegionPendingForTesting(playerId, blockedKeyA));
 
-            // Clear cooldown and tick 3rd time
-            netManager.clearRetryCooldownForTesting(playerId, blockedKey);
+            // Clear cooldown and tick 3rd attempt for A
+            netManager.clearRetryCooldownForTesting(playerId, blockedKeyA);
             netManager.tick(dim);
-            assertEquals(3, netManager.getFailedAttemptsForTesting(playerId, blockedKey), "Attempt 3 should be recorded");
-            assertTrue(netManager.isRegionPendingForTesting(playerId, blockedKey));
+            assertEquals(3, netManager.getFailedAttemptsForTesting(playerId, blockedKeyA), "Attempt 3 should be recorded");
+            assertTrue(netManager.isRegionPendingForTesting(playerId, blockedKeyA));
 
-            // Clear cooldown and tick 4th time: exceeds MAX_REGION_JOB_RETRIES (3) -> job is abandoned and not re-enqueued
-            netManager.clearRetryCooldownForTesting(playerId, blockedKey);
+            // Clear cooldown and tick 4th attempt for A: exceeds MAX_REGION_JOB_RETRIES (3) -> job is abandoned and not re-enqueued
+            netManager.clearRetryCooldownForTesting(playerId, blockedKeyA);
             netManager.tick(dim);
-            assertEquals(4, netManager.getFailedAttemptsForTesting(playerId, blockedKey), "Attempt 4 should record failure");
-            assertFalse(netManager.isRegionPendingForTesting(playerId, blockedKey), "Abandoned job must not be re-enqueued after exceeding max retries");
+            assertEquals(4, netManager.getFailedAttemptsForTesting(playerId, blockedKeyA), "Attempt 4 should record failure");
+            assertFalse(netManager.isRegionPendingForTesting(playerId, blockedKeyA), "Abandoned job must not be re-enqueued after exceeding max retries");
         } finally {
             try (var paths = Files.walk(tempDir)) {
                 paths.sorted(Comparator.reverseOrder()).forEach(p -> {
