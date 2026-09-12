@@ -137,6 +137,47 @@ Following peer review of commit `c89dfac`, a focused Phase 1.1 pass was executed
 
 ---
 
+## Phase 1.2 — Network Containment, Storage-Identity Recovery & Read-Error Classification
+
+Following peer review of commit `50ae8ac`, a targeted Phase 1.2 pass was completed while holding Minecraft at `26.2` to close the three remaining baseline safety gaps.
+
+### 1. Network Tick Containment (P1)
+- **Finding**: In `ServerNetworkManager.tick()`, snapshot materialization called `index.getOrCreateRegion(rx, rz)` without a `RegionStorageException` handler. If a region failed quarantine or experienced a read/access error, the exception escaped `tick()`, terminating network packet processing for all players in that world for that tick.
+- **Remediation**:
+  - Contained exceptions at the individual region-job boundary with `try-catch (RuntimeException e)`.
+  - On failure:
+    1. Does not throw out of `tick()`.
+    2. Does not add the region to `streamingRegions`.
+    3. Does not construct an empty snapshot or transmit empty packets to the client.
+    4. Does not mark the region as `syncedRegions`.
+    5. Increments `materializedRegions++` to consume the tick work budget, preventing infinite spin.
+    6. Implemented deferred backoff policy: tracks retry count in `failedJobRetries` and cooldown in `retryAfterTimestamp` (`FAILED_JOB_RETRY_BACKOFF_MS = 3000L`). Failed jobs are re-queued up to `MAX_REGION_JOB_RETRIES = 3`; on the 4th failure, the job is abandoned and removed from the queue.
+  - Added regression test `testBlockedRegionDoesNotThrowDuringNetworkTickAndPermitsHealthyJobs()` in `ServerStorageAndNetworkTest`: asserts that a blocked region does not throw, does not enter streaming or synced, healthy sibling region progresses to synced, work budget is consumed, retry cooldown prevents immediate retry, and job is abandoned after exceeding max attempts.
+
+### 2. Recovery Ownership & Single-Writer Protection (P1)
+- **Finding**: `pendingRecoveryIndices` was keyed by `ResourceKey<Level> dimension`. If multiple save sessions or tests operated on different storage directories for the same dimension, a clean unload of one session could overwrite or remove an unresolved recovery entry from another session. Additionally, opening a new index against storage with unresolved pending writes permitted split-brain concurrent writes.
+- **Remediation**:
+  - Keyed recovery ownership by normalized storage directory: `Map<Path, ServerDecorationWorldIndex> pendingRecoveryByStorage`.
+  - Added single-writer protection in `openIndex(level, storageDir)`: checks for pending recovery at the target storage path. If present, it attempts to flush and close the pending index; if unresolved, it refuses to open (`returns null`), protecting existing data from concurrent or stale overwrites.
+  - In `handleLevelUnload(dimension)`, removing an index from recovery requires exact instance identity match via `pendingRecoveryByStorage.remove(normalizedStorage, index)`.
+  - In `handleServerStopping()`, cleanly flushes all live indices and flushes all `pendingRecoveryByStorage` entries, returning `true` only if all active and recovery indices persisted cleanly.
+  - Added regression tests in `StorageSafetyRegressionTest`:
+    - `testRecoveryOwnershipIndependentAcrossSaveSessionsForSameDimension()`: proves multiple save sessions sharing a dimension retain recovery independently, and clean unload of session B does not evict session A from recovery.
+    - `testSingleWriterPreventsReopeningStorageWithUnresolvedPendingWrites()`: proves `openIndex` returns null while recovery is unresolved, and succeeds once resolved.
+    - `testServerDecorationManagerCleanShutdown()` and `testServerDecorationManagerShutdownFlushesPendingRecovery()`: separate clean shutdown from genuine recovery flush.
+
+### 3. Loader Read-Error Classification (P1)
+- **Finding**: `loadRegionFromFileWithResult()` equated indeterminate file access (`!Files.exists(path)`) with a missing region. Furthermore, read and permission errors (such as `AccessDeniedException`) fell into the generic `Exception` catch block and attempted to move the file into quarantine.
+- **Remediation**:
+  - Direct stream open: `openInputStream(path)` is attempted directly.
+  - Confirmed absence: only `NoSuchFileException` (or `Files.notExists(path)`) returns `RegionLoadStatus.MISSING`.
+  - Read/access error: `AccessDeniedException`, `SecurityException`, or unexpected I/O errors return `RegionLoadStatus.READ_ERROR`, add the region key to `blockedRegions`, and do NOT invoke quarantine.
+  - Corruption quarantine: quarantine is strictly reserved for diagnosed corruption (`EOFException`, `UTFDataFormatException`, invalid magic, unsupported format version, corrupted payload length).
+  - `loadRegionFromFile()` throws `RegionStorageException` on `READ_ERROR` and `QUARANTINE_FAILED` rather than returning `null`.
+  - Added regression test `testAccessDeniedProducesReadErrorWithoutQuarantine()`: verifies `READ_ERROR`, no `.corrupt.` file created, region marked blocked, `getOrCreateRegion()` throws `RegionStorageException`, `saveRegionToFile()` refuses overwrite, and original file bytes remain intact.
+
+---
+
 ## Current Test Inventory & Verification Matrix
 
 | Test Suite | File | Tests Run | Result | Notes |
@@ -144,13 +185,13 @@ Following peer review of commit `c89dfac`, a focused Phase 1.1 pass was executed
 | Core API | `CoreApiTest.java` | 5 | PASS | Type encoding, ID equality/hash, payload limits, network & stream codecs |
 | Scale Benchmark | `ScaleBenchmarkTest.java` | 4 | PASS | Snapshot materialization, disk I/O, thumbnail invariant, render traversal |
 | Provider Test | `ProviderTest.java` | 3 | PASS | Painting & picture frame data serialization, registry registration |
-| Server Storage & Net | `ServerStorageAndNetworkTest.java` | 7 | PASS | C2S/S2C packet roundtrips, region streams, maintenance tick throttle |
+| Server Storage & Net | `ServerStorageAndNetworkTest.java` | 8 | PASS | C2S/S2C packet roundtrips, region streams, maintenance tick throttle, **network tick containment with retry backoff** |
 | Spatial Index | `SpatialIndexTest.java` | 10 | PASS | Frustum culling, cell partitioning, multipart assembly, top-K selection |
 | Command Authorization | `CommandAuthorizationRegressionTest.java` | 6 | PASS | Brigadier client toggle (both server switch states), exact GAMEMASTER permission boundary |
-| Storage Safety | `StorageSafetyRegressionTest.java` | 6 | PASS | Dirty retention, quarantine move, quarantine failure overwrite block, manager unload recovery queue |
-| **Total Unit Tests** | | **41** | **PASS** | `BUILD SUCCESSFUL in 12s` |
+| Storage Safety | `StorageSafetyRegressionTest.java` | 10 | PASS | Dirty retention, quarantine move, quarantine failure overwrite block, access denied classification without quarantine, storage-keyed recovery isolation, single-writer protection, clean shutdown, recovery shutdown flush |
+| **Total Unit Tests** | | **46** | **PASS** | `BUILD SUCCESSFUL in 11s` |
 | Integration GameTests | `DistantDecorationsIntegrationGameTest.java` | 4 | PASS | Minecraft `ALWAYS_PASS`, truthful barrel publish/payload/bounds/revision/remove, lifecycle persistence, index init |
-| **Total Automated Tests** | | **45** | **PASS** | Complete unit and GameTest suite passing |
+| **Total Automated Tests** | | **50** | **PASS** | Complete unit and GameTest suite passing |
 
 ---
 
@@ -185,16 +226,17 @@ Following peer review of commit `c89dfac`, a focused Phase 1.1 pass was executed
 2. `a813e9f` — `build: isolate optional benchmark dependencies and publication metadata`
 3. `80a8f80` — `fix: authorize DD server controls and retain failed-save regions`
 4. `c89dfac` — `docs: record Phase 0 baseline and Phase 1 regression evidence in PROGRESS.md`
+5. `50ae8ac` — `fix: harden quarantine, command tests, provider assertions, and benchmark isolation`
 
 ---
 
-## Review Gate Sign-off (Phase 0, Phase 1 & Phase 1.1)
+## Review Gate Sign-off (Phase 0, Phase 1, Phase 1.1 & Phase 1.2)
 
-- [x] Baseline and regression test counts recorded and passing (41 unit tests, 4 GameTests = 45 automated tests).
+- [x] Baseline and regression test counts recorded and passing (46 unit tests, 4 GameTests = 50 automated tests).
+- [x] Network tick contains storage exceptions, enforces budget consumption, deferred backoff retry, and prevents empty snapshots / false syncs.
+- [x] Storage recovery keyed by normalized path; single-writer protection prevents concurrent / split-brain opens against unresolved storage.
+- [x] Read/access errors classified as `READ_ERROR` without quarantine; quarantine strictly reserved for diagnosed corruption.
 - [x] Benchmark dependencies structurally isolated in `benchmarkRuntime` configuration; POM and module metadata verified clean under both `-PenableBenchmarkMods=false` and `-PenableBenchmarkMods=true`.
 - [x] Command authorization verified via Brigadier for `/dd toggle` (exact GAMEMASTER level 2 requirement) and `/ddc toggle` (independent client switch under both server states).
-- [x] Storage failure safety verified: dirty retention on failed save, corrupt file quarantine, quarantine failure overwrite prevention with byte-for-byte preservation, manager unload recovery queue.
-- [x] Truthful test fixtures: barrel provider asserts decoded payload string, exact bounds, and revision invariance on unchanged publish.
-- [x] Toolchain baseline discrepancy reconciled in documentation (initial `0.19.3`/`0.158.0+26.2` vs reviewed `0.19.5`/`0.160.0+26.2`).
 - [x] Minecraft version strictly preserved at `26.2` for baseline gate.
 - [x] Ready for Phase 2 toolchain and dependency bump to 26.3 upon user approval.

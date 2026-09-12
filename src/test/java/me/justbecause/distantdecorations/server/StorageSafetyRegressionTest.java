@@ -14,7 +14,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
@@ -158,6 +160,51 @@ public class StorageSafetyRegressionTest {
     }
 
     @Test
+    public void testAccessDeniedProducesReadErrorWithoutQuarantine() throws Exception {
+        Path regionFile = tempDir.resolve("r.10.10.dat");
+        byte[] originalBytes = new byte[]{1, 2, 3, 4, 5};
+        Files.write(regionFile, originalBytes);
+
+        ServerDecorationWorldIndex failingIndex = new ServerDecorationWorldIndex(null, tempDir) {
+            @Override
+            protected InputStream openInputStream(Path path) throws IOException {
+                throw new AccessDeniedException(path.toString(), null, "Simulated access denied");
+            }
+        };
+
+        var result = failingIndex.loadRegionFromFileWithResult(10, 10);
+        assertEquals(ServerDecorationWorldIndex.RegionLoadStatus.READ_ERROR, result.status());
+        assertInstanceOf(AccessDeniedException.class, result.cause());
+
+        // Verify NO quarantine file was created
+        try (var stream = Files.list(tempDir)) {
+            List<Path> quarantined = stream.filter(p -> p.getFileName().toString().contains(".corrupt.")).toList();
+            assertTrue(quarantined.isEmpty(), "No quarantine file must be created for read/access errors");
+        }
+
+        // Region must be marked blocked
+        assertTrue(failingIndex.isRegionBlocked(10, 10), "Region must be marked blocked on read error");
+
+        // getOrCreateRegion must throw RegionStorageException
+        assertThrows(ServerDecorationWorldIndex.RegionStorageException.class,
+            () -> failingIndex.getOrCreateRegion(10, 10),
+            "getOrCreateRegion must throw RegionStorageException for blocked region");
+
+        // loadRegionFromFile must throw RegionStorageException
+        assertThrows(ServerDecorationWorldIndex.RegionStorageException.class,
+            () -> failingIndex.loadRegionFromFile(10, 10),
+            "loadRegionFromFile must throw RegionStorageException for READ_ERROR");
+
+        // saveRegionToFile must refuse
+        ServerDecorationRegion testRegion = new ServerDecorationRegion(10, 10);
+        testRegion.addOrUpdate(createDummyRecord(10 * 512, 10 * 512));
+        assertFalse(failingIndex.saveRegionToFile(testRegion), "saveRegionToFile must return false for blocked region");
+
+        // Original file must remain intact
+        assertArrayEquals(originalBytes, Files.readAllBytes(regionFile), "Original file must not be modified");
+    }
+
+    @Test
     public void testServerDecorationManagerUnloadFailureRecovery() throws Exception {
         ServerDecorationManager manager = ServerDecorationManager.getInstance();
         manager.clearForTesting();
@@ -174,27 +221,24 @@ public class StorageSafetyRegressionTest {
         manager.registerIndexForTesting(dim, index);
         assertSame(index, manager.getIndex(dim));
 
-        // Sabotage storage directory to simulate save failure on level unload
-        Field storageDirField = ServerDecorationWorldIndex.class.getDeclaredField("storageDir");
-        storageDirField.setAccessible(true);
-        Path invalidDir = tempDir.resolve("non_existent").resolve("deep_invalid");
-        storageDirField.set(index, invalidDir);
+        // Block dirty region to simulate save failure on level unload without mutating storage directory
+        index.blockRegionForTesting(2, 2);
 
-        // Level unload should fail cleanly and place the index into pendingRecoveryIndices
+        // Level unload should fail cleanly and place the index into pendingRecoveryByStorage
         boolean unloadClean = manager.handleLevelUnload(dim);
         assertFalse(unloadClean, "Unload should report false when persistence fails");
         assertNull(manager.getIndex(dim), "Unloaded dimension must no longer be in active worldIndices");
-        assertTrue(manager.getPendingRecoveryIndices().containsKey(dim),
-            "Failed dimension must be retained in pendingRecoveryIndices");
+        assertTrue(manager.isStoragePendingRecovery(managerStorage),
+            "Failed storage must be retained in pendingRecoveryByStorage");
 
-        // Fix the storage directory to allow recovery
-        storageDirField.set(index, managerStorage);
+        // Unblock region to allow successful recovery
+        index.unblockRegion(2, 2);
 
-        // Retry pending recovery
-        boolean retryClean = manager.retryPendingRecovery(dim);
+        // Retry pending recovery by storage path
+        boolean retryClean = manager.retryPendingRecovery(managerStorage);
         assertTrue(retryClean, "Retry pending recovery should succeed after fixing storage issue");
-        assertFalse(manager.getPendingRecoveryIndices().containsKey(dim),
-            "Recovered dimension must be removed from pendingRecoveryIndices");
+        assertFalse(manager.isStoragePendingRecovery(managerStorage),
+            "Recovered storage must be removed from pendingRecoveryByStorage");
 
         // File should now be saved on disk
         Path savedFile = managerStorage.resolve("r.2.2.dat");
@@ -202,12 +246,97 @@ public class StorageSafetyRegressionTest {
     }
 
     @Test
-    public void testServerDecorationManagerShutdownHandlesPendingRecovery() throws Exception {
+    public void testRecoveryOwnershipIndependentAcrossSaveSessionsForSameDimension() throws Exception {
         ServerDecorationManager manager = ServerDecorationManager.getInstance();
         manager.clearForTesting();
 
-        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("test", "test_dim_shutdown"));
-        Path managerStorage = tempDir.resolve("manager_storage_shutdown");
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("test", "shared_dim"));
+        Path dirA = tempDir.resolve("storage_a");
+        Path dirB = tempDir.resolve("storage_b");
+        Path dirC = tempDir.resolve("storage_c");
+        Files.createDirectories(dirA);
+        Files.createDirectories(dirB);
+        Files.createDirectories(dirC);
+
+        // Session 1: Index A on dirA fails unload
+        ServerDecorationWorldIndex indexA = new ServerDecorationWorldIndex(null, dirA);
+        ServerDecorationRegion regA = indexA.getOrCreateRegion(1, 1);
+        regA.addOrUpdate(createDummyRecord(512, 512));
+        manager.registerIndexForTesting(dim, indexA);
+        indexA.blockRegionForTesting(1, 1); // simulate save failure
+        boolean unloadA = manager.handleLevelUnload(dim);
+        assertFalse(unloadA);
+        assertTrue(manager.isStoragePendingRecovery(dirA));
+        assertEquals(1, manager.getPendingRecoveryIndices().size());
+
+        // Session 2: Index B on dirB (same dimension) unloads cleanly
+        ServerDecorationWorldIndex indexB = new ServerDecorationWorldIndex(null, dirB);
+        manager.registerIndexForTesting(dim, indexB);
+        boolean unloadB = manager.handleLevelUnload(dim);
+        assertTrue(unloadB);
+        // CRITICAL: Clean close of index B must NOT remove index A from recovery!
+        assertTrue(manager.isStoragePendingRecovery(dirA), "Index A must still be retained in recovery after index B clean unload");
+        assertFalse(manager.isStoragePendingRecovery(dirB));
+        assertEquals(1, manager.getPendingRecoveryIndices().size());
+
+        // Session 3: Index C on dirC (same dimension) also fails unload
+        ServerDecorationWorldIndex indexC = new ServerDecorationWorldIndex(null, dirC);
+        ServerDecorationRegion regC = indexC.getOrCreateRegion(3, 3);
+        regC.addOrUpdate(createDummyRecord(3 * 512, 3 * 512));
+        manager.registerIndexForTesting(dim, indexC);
+        indexC.blockRegionForTesting(3, 3); // simulate save failure
+        boolean unloadC = manager.handleLevelUnload(dim);
+        assertFalse(unloadC);
+        assertTrue(manager.isStoragePendingRecovery(dirA), "Index A must still be in recovery");
+        assertTrue(manager.isStoragePendingRecovery(dirC), "Index C must also be in recovery");
+        assertFalse(manager.isStoragePendingRecovery(dirB), "Index B should not be in recovery");
+        assertEquals(2, manager.getPendingRecoveryIndices().size());
+    }
+
+    @Test
+    public void testSingleWriterPreventsReopeningStorageWithUnresolvedPendingWrites() throws Exception {
+        ServerDecorationManager manager = ServerDecorationManager.getInstance();
+        manager.clearForTesting();
+
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("test", "single_writer_dim"));
+        Path storageDir = tempDir.resolve("single_writer_storage");
+        Files.createDirectories(storageDir);
+
+        // Index A on storageDir fails unload
+        ServerDecorationWorldIndex indexA = new ServerDecorationWorldIndex(null, storageDir);
+        ServerDecorationRegion regA = indexA.getOrCreateRegion(5, 5);
+        regA.addOrUpdate(createDummyRecord(5 * 512, 5 * 512));
+        manager.registerIndexForTesting(dim, indexA);
+        indexA.blockRegionForTesting(5, 5); // simulate save failure
+        boolean unload = manager.handleLevelUnload(dim);
+        assertFalse(unload);
+        assertTrue(manager.isStoragePendingRecovery(storageDir));
+
+        // Attempt to open index on the same storage while recovery cannot resolve
+        ServerDecorationWorldIndex opened = manager.openIndex(dim, storageDir);
+        assertNull(opened, "openIndex must return null when previous index has unresolved pending writes");
+        assertTrue(manager.isStoragePendingRecovery(storageDir));
+
+        // Now fix the underlying problem on index A by unblocking region
+        indexA.unblockRegion(5, 5);
+
+        // Attempt to open index again: it resolves pending recovery for index A, flushes writes, and opens new index
+        ServerDecorationWorldIndex openedClean = manager.openIndex(dim, storageDir);
+        assertNotNull(openedClean, "openIndex should succeed once pending recovery is resolved");
+        assertFalse(manager.isStoragePendingRecovery(storageDir), "Storage should no longer be pending recovery");
+
+        // Verify index A's data was persisted to disk
+        Path regionFile = storageDir.resolve("r.5.5.dat");
+        assertTrue(Files.exists(regionFile), "Region file from previous session must be flushed to disk");
+    }
+
+    @Test
+    public void testServerDecorationManagerCleanShutdown() throws Exception {
+        ServerDecorationManager manager = ServerDecorationManager.getInstance();
+        manager.clearForTesting();
+
+        ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.fromNamespaceAndPath("test", "test_dim_clean_shutdown"));
+        Path managerStorage = tempDir.resolve("manager_storage_clean_shutdown");
         Files.createDirectories(managerStorage);
 
         ServerDecorationWorldIndex index = new ServerDecorationWorldIndex(null, managerStorage);
@@ -220,5 +349,29 @@ public class StorageSafetyRegressionTest {
         assertTrue(shutdownClean, "Shutdown should succeed when all indices save cleanly");
         assertTrue(manager.getPendingRecoveryIndices().isEmpty(), "No pending recovery indices after clean shutdown");
         assertTrue(Files.exists(managerStorage.resolve("r.4.4.dat")), "Saved file should exist after shutdown");
+    }
+
+    @Test
+    public void testServerDecorationManagerShutdownFlushesPendingRecovery() throws Exception {
+        ServerDecorationManager manager = ServerDecorationManager.getInstance();
+        manager.clearForTesting();
+
+        Path recoveryStorage = tempDir.resolve("recovery_storage_shutdown");
+        Files.createDirectories(recoveryStorage);
+
+        ServerDecorationWorldIndex pendingIndex = new ServerDecorationWorldIndex(null, recoveryStorage);
+        ServerDecorationRegion region = pendingIndex.getOrCreateRegion(8, 8);
+        region.addOrUpdate(createDummyRecord(8 * 512, 8 * 512));
+        assertTrue(region.isDirty());
+
+        // Seed directly into pendingRecoveryByStorage
+        manager.registerRecoveryForTesting(recoveryStorage, pendingIndex);
+        assertTrue(manager.isStoragePendingRecovery(recoveryStorage));
+
+        // Shutdown flushes pending recovery indices
+        boolean shutdownClean = manager.handleServerStopping();
+        assertTrue(shutdownClean, "Shutdown should succeed after successfully flushing pending recovery");
+        assertTrue(manager.getPendingRecoveryIndices().isEmpty(), "Pending recovery should be empty after successful flush");
+        assertTrue(Files.exists(recoveryStorage.resolve("r.8.8.dat")), "Pending recovery region must be persisted to disk");
     }
 }

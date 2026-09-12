@@ -1,5 +1,6 @@
 package me.justbecause.distantdecorations.server;
 
+import me.justbecause.distantdecorations.DistantDecorations;
 import me.justbecause.distantdecorations.api.DecorationId;
 import me.justbecause.distantdecorations.api.DecorationRecord;
 import me.justbecause.distantdecorations.network.c2s.C2SClientHello;
@@ -33,6 +34,8 @@ public final class ServerNetworkManager {
     public static final int DEFAULT_MAX_BYTES_PER_TICK = 131072; // 128 KiB per tick per player
     public static final int MAX_REGIONS_MATERIALIZED_PER_TICK = 2; // Progressive construction budget (regions)
     public static final int MAX_RECORDS_MATERIALIZED_PER_TICK = 2000; // Progressive construction budget (records)
+    public static final int MAX_REGION_JOB_RETRIES = 3;
+    public static final long FAILED_JOB_RETRY_BACKOFF_MS = 3000L;
 
     private static final class PlayerSubscription {
         final ServerPlayer player;
@@ -50,12 +53,14 @@ public final class ServerNetworkManager {
         final List<Long> pendingRegionJobs = Collections.synchronizedList(new ArrayList<>());
         final Queue<S2CRegionSnapshot> pendingPackets = new ConcurrentLinkedQueue<>();
         final Map<Long, List<S2CRegionDelta>> bufferedDeltas = new ConcurrentHashMap<>();
+        final Map<Long, Integer> failedJobRetries = new ConcurrentHashMap<>();
+        final Map<Long, Long> retryAfterTimestamp = new ConcurrentHashMap<>();
 
-        PlayerSubscription(ServerPlayer player) {
+        PlayerSubscription(@org.jetbrains.annotations.Nullable ServerPlayer player) {
             this.player = player;
-            this.centerChunkX = player.getBlockX() >> 4;
-            this.centerChunkZ = player.getBlockZ() >> 4;
-            this.dimension = player.level().dimension();
+            this.centerChunkX = player != null ? (player.getBlockX() >> 4) : 0;
+            this.centerChunkZ = player != null ? (player.getBlockZ() >> 4) : 0;
+            this.dimension = player != null && player.level() != null ? player.level().dimension() : null;
         }
     }
 
@@ -181,6 +186,8 @@ public final class ServerNetworkManager {
         sub.streamingRegions.clear();
         sub.syncedRegions.clear();
         sub.bufferedDeltas.clear();
+        sub.failedJobRetries.clear();
+        sub.retryAfterTimestamp.clear();
         synchronized (sub.pendingRegionJobs) {
             sub.pendingRegionJobs.clear();
         }
@@ -192,11 +199,24 @@ public final class ServerNetworkManager {
         if (index == null) {
             return;
         }
+        tickInternal(level.dimension(), index, level);
+    }
 
+    public void tick(ResourceKey<Level> dimension) {
+        ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(dimension);
+        if (index == null) {
+            return;
+        }
+        tickInternal(dimension, index, null);
+    }
+
+    private void tickInternal(ResourceKey<Level> dimension, ServerDecorationWorldIndex index, @org.jetbrains.annotations.Nullable ServerLevel level) {
         Set<Long> allActiveRegionsInLevel = new HashSet<>();
         for (PlayerSubscription sub : subscriptions.values()) {
-            if (sub.player.level() == level && sub.helloAccepted) {
-                if (!level.dimension().equals(sub.dimension)) {
+            boolean matchesLevel = (level != null && sub.player != null && sub.player.level() == level)
+                || (sub.player == null && dimension.equals(sub.dimension));
+            if (sub.helloAccepted && matchesLevel) {
+                if (level != null && sub.player != null && !dimension.equals(sub.dimension)) {
                     updateSubscriptions(
                         sub.player,
                         sub.player.getBlockX() >> 4,
@@ -213,20 +233,39 @@ public final class ServerNetworkManager {
 
         // Process progressive snapshot materialization and byte-budgeted streaming
         for (PlayerSubscription sub : subscriptions.values()) {
-            if (sub.player.level() != level || !sub.player.isAlive() || !sub.helloAccepted) {
+            if (!sub.helloAccepted) {
+                continue;
+            }
+            if (level != null && sub.player != null && (sub.player.level() != level || !sub.player.isAlive())) {
+                continue;
+            }
+            if (sub.player == null && !dimension.equals(sub.dimension)) {
                 continue;
             }
 
             // A. Progressive snapshot construction (bounded CPU/disk/record budget)
             int materializedRegions = 0;
             int materializedRecords = 0;
+            long now = System.currentTimeMillis();
             while (materializedRegions < MAX_REGIONS_MATERIALIZED_PER_TICK && materializedRecords < MAX_RECORDS_MATERIALIZED_PER_TICK && !sub.pendingRegionJobs.isEmpty() && sub.pendingPackets.size() < 16) {
                 Long nextKey;
                 synchronized (sub.pendingRegionJobs) {
-                    nextKey = sub.pendingRegionJobs.isEmpty() ? null : sub.pendingRegionJobs.remove(0);
-                }
-                if (nextKey == null) {
-                    break;
+                    if (sub.pendingRegionJobs.isEmpty()) {
+                        break;
+                    }
+                    int readyIndex = -1;
+                    for (int i = 0; i < sub.pendingRegionJobs.size(); i++) {
+                        long k = sub.pendingRegionJobs.get(i);
+                        long cooldown = sub.retryAfterTimestamp.getOrDefault(k, 0L);
+                        if (now >= cooldown) {
+                            readyIndex = i;
+                            break;
+                        }
+                    }
+                    if (readyIndex == -1) {
+                        break;
+                    }
+                    nextKey = sub.pendingRegionJobs.remove(readyIndex);
                 }
 
                 if (!sub.desiredRegions.contains(nextKey) || sub.syncedRegions.contains(nextKey)) {
@@ -235,8 +274,31 @@ public final class ServerNetworkManager {
 
                 int rx = (int) (nextKey >> 32);
                 int rz = (int) (long) nextKey;
-                ServerDecorationRegion region = index.getOrCreateRegion(rx, rz);
+
+                ServerDecorationRegion region;
+                try {
+                    region = index.getOrCreateRegion(rx, rz);
+                } catch (RuntimeException e) {
+                    materializedRegions++; // Consumes work budget!
+                    int retries = sub.failedJobRetries.merge(nextKey, 1, Integer::sum);
+                    String playerName = sub.player != null ? sub.player.getName().getString() : "test-player";
+                    if (retries <= MAX_REGION_JOB_RETRIES) {
+                        sub.retryAfterTimestamp.put(nextKey, now + FAILED_JOB_RETRY_BACKOFF_MS);
+                        synchronized (sub.pendingRegionJobs) {
+                            sub.pendingRegionJobs.add(nextKey);
+                        }
+                        DistantDecorations.LOGGER.warn("Region [{}, {}] snapshot deferred for player {} (attempt {}/{}): {}",
+                            rx, rz, playerName, retries, MAX_REGION_JOB_RETRIES, e.getMessage());
+                    } else {
+                        DistantDecorations.LOGGER.error("Region [{}, {}] snapshot abandoned for player {} after {} failed attempts: {}",
+                            rx, rz, playerName, retries, e.getMessage());
+                    }
+                    continue;
+                }
+
                 sub.streamingRegions.add(nextKey);
+                sub.failedJobRetries.remove(nextKey);
+                sub.retryAfterTimestamp.remove(nextKey);
 
                 Collection<DecorationRecord> allRecords = region.getAllRecords();
                 List<DecorationRecord> filteredRecords = new ArrayList<>();
@@ -273,10 +335,12 @@ public final class ServerNetworkManager {
                 }
 
                 sub.pendingPackets.poll();
-                if (ServerPlayNetworking.canSend(sub.player, S2CRegionSnapshot.TYPE)) {
+                if (sub.player != null && ServerPlayNetworking.canSend(sub.player, S2CRegionSnapshot.TYPE)) {
                     ServerPlayNetworking.send(sub.player, packet);
                     TelemetryMetrics.SERVER_SNAPSHOTS_SENT.incrementAndGet();
                     TelemetryMetrics.SERVER_METADATA_BYTES_SENT.addAndGet(estimatedBytes);
+                    bytesSentThisTick += estimatedBytes;
+                } else if (sub.player == null) {
                     bytesSentThisTick += estimatedBytes;
                 }
 
@@ -290,7 +354,7 @@ public final class ServerNetworkManager {
                     List<S2CRegionDelta> buffered = sub.bufferedDeltas.remove(key);
                     if (buffered != null) {
                         for (S2CRegionDelta delta : buffered) {
-                            if (ServerPlayNetworking.canSend(sub.player, S2CRegionDelta.TYPE)) {
+                            if (sub.player != null && ServerPlayNetworking.canSend(sub.player, S2CRegionDelta.TYPE)) {
                                 ServerPlayNetworking.send(sub.player, delta);
                                 TelemetryMetrics.SERVER_DELTAS_SENT.incrementAndGet();
                             }
@@ -382,6 +446,68 @@ public final class ServerNetworkManager {
             }
             // If region is in pendingRegionJobs, it will be materialized with the latest revision when it runs
         }
+    }
+
+    public void registerSubscriptionForTesting(ServerPlayer player, boolean helloAccepted) {
+        PlayerSubscription sub = new PlayerSubscription(player);
+        sub.helloAccepted = helloAccepted;
+        subscriptions.put(player.getUUID(), sub);
+    }
+
+    public void registerTestSubscription(UUID playerId, ResourceKey<Level> dim, boolean helloAccepted) {
+        PlayerSubscription sub = new PlayerSubscription(null);
+        sub.dimension = dim;
+        sub.helloAccepted = helloAccepted;
+        subscriptions.put(playerId, sub);
+    }
+
+    public int getPendingPacketsCountForTesting(UUID playerId) {
+        PlayerSubscription sub = subscriptions.get(playerId);
+        return sub != null ? sub.pendingPackets.size() : 0;
+    }
+
+    public void clearRetryCooldownForTesting(UUID playerId, long regionKey) {
+        PlayerSubscription sub = subscriptions.get(playerId);
+        if (sub != null) {
+            sub.retryAfterTimestamp.remove(regionKey);
+        }
+    }
+
+    public void enqueuePendingJobForTesting(UUID playerId, long regionKey) {
+        PlayerSubscription sub = subscriptions.get(playerId);
+        if (sub != null) {
+            sub.desiredRegions.add(regionKey);
+            synchronized (sub.pendingRegionJobs) {
+                sub.pendingRegionJobs.add(regionKey);
+            }
+        }
+    }
+
+    public boolean isRegionSyncedForTesting(UUID playerId, long regionKey) {
+        PlayerSubscription sub = subscriptions.get(playerId);
+        return sub != null && sub.syncedRegions.contains(regionKey);
+    }
+
+    public boolean isRegionStreamingForTesting(UUID playerId, long regionKey) {
+        PlayerSubscription sub = subscriptions.get(playerId);
+        return sub != null && sub.streamingRegions.contains(regionKey);
+    }
+
+    public boolean isRegionPendingForTesting(UUID playerId, long regionKey) {
+        PlayerSubscription sub = subscriptions.get(playerId);
+        if (sub == null) return false;
+        synchronized (sub.pendingRegionJobs) {
+            return sub.pendingRegionJobs.contains(regionKey);
+        }
+    }
+
+    public int getFailedAttemptsForTesting(UUID playerId, long regionKey) {
+        PlayerSubscription sub = subscriptions.get(playerId);
+        return sub != null ? sub.failedJobRetries.getOrDefault(regionKey, 0) : 0;
+    }
+
+    public void clearForTesting() {
+        subscriptions.clear();
     }
 }
 

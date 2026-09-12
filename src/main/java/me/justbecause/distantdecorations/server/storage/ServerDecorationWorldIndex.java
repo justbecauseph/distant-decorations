@@ -16,9 +16,7 @@ import net.minecraft.world.phys.AABB;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -98,8 +96,20 @@ public class ServerDecorationWorldIndex {
         return level;
     }
 
+    public Path getStorageDir() {
+        return storageDir;
+    }
+
+    private String getLevelIdentifier() {
+        return level != null ? level.dimension().identifier().toString() : "test";
+    }
+
     public boolean isRegionBlocked(int regionX, int regionZ) {
         return blockedRegions.contains(packRegionKey(regionX, regionZ));
+    }
+
+    public void blockRegionForTesting(int regionX, int regionZ) {
+        blockedRegions.add(packRegionKey(regionX, regionZ));
     }
 
     public void unblockRegion(int regionX, int regionZ) {
@@ -131,9 +141,13 @@ public class ServerDecorationWorldIndex {
                     TelemetryMetrics.SERVER_REGIONS.incrementAndGet();
                     return newRegion;
                 }
-                case QUARANTINE_FAILED, READ_ERROR -> {
+                case QUARANTINE_FAILED -> {
                     blockedRegions.add(key);
                     throw new RegionStorageException("Cannot initialize or replace region [" + regionX + ", " + regionZ + "]: corrupt file remains on disk because quarantine failed", result.cause());
+                }
+                case READ_ERROR -> {
+                    blockedRegions.add(key);
+                    throw new RegionStorageException("Cannot load region [" + regionX + ", " + regionZ + "]: read or access error", result.cause());
                 }
                 default -> throw new IllegalStateException("Unhandled region load status: " + result.status());
             }
@@ -353,37 +367,94 @@ public class ServerDecorationWorldIndex {
         return storageDir.resolve("r." + rx + "." + rz + ".dat");
     }
 
+    protected InputStream openInputStream(Path path) throws IOException {
+        return Files.newInputStream(path);
+    }
+
     protected void moveFileToQuarantine(Path source, Path target) throws IOException {
         Files.move(source, target);
     }
 
     public RegionLoadResult loadRegionFromFileWithResult(int rx, int rz) {
         Path path = getRegionFilePath(rx, rz);
-        if (!Files.exists(path)) {
+        InputStream in;
+        try {
+            in = openInputStream(path);
+        } catch (NoSuchFileException e) {
             return RegionLoadResult.missing();
+        } catch (AccessDeniedException e) {
+            DistantDecorations.LOGGER.error("Access denied opening region file {} for {}: {}", path, getLevelIdentifier(), e.getMessage());
+            blockedRegions.add(packRegionKey(rx, rz));
+            return RegionLoadResult.readError(e);
+        } catch (IOException e) {
+            if (Files.notExists(path)) {
+                return RegionLoadResult.missing();
+            }
+            DistantDecorations.LOGGER.error("I/O error opening region file {} for {}: {}", path, getLevelIdentifier(), e.getMessage());
+            blockedRegions.add(packRegionKey(rx, rz));
+            return RegionLoadResult.readError(e);
+        } catch (SecurityException e) {
+            DistantDecorations.LOGGER.error("Security exception opening region file {} for {}: {}", path, getLevelIdentifier(), e.getMessage());
+            blockedRegions.add(packRegionKey(rx, rz));
+            return RegionLoadResult.readError(e);
         }
-        try (DataInputStream dis = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
+
+        try (DataInputStream dis = new DataInputStream(new BufferedInputStream(in))) {
             ServerDecorationRegion loaded = ServerDecorationRegion.readFromStream(dis);
             return RegionLoadResult.success(loaded);
-        } catch (Exception e) {
-            DistantDecorations.LOGGER.error("Failed to load region file {} for {}: corrupted or unreadable",
-                path, level != null ? level.dimension().identifier() : "test", e);
-            Path corruptPath = storageDir.resolve("r." + rx + "." + rz + ".dat.corrupt." + System.currentTimeMillis() + "." + UUID.randomUUID());
-            try {
-                moveFileToQuarantine(path, corruptPath);
-                DistantDecorations.LOGGER.warn("Quarantined corrupt region file {} to {}", path, corruptPath);
-                return RegionLoadResult.quarantined(e);
-            } catch (IOException moveEx) {
-                DistantDecorations.LOGGER.error("Failed to quarantine corrupt region file {}: cannot move to {}", path, corruptPath, moveEx);
-                return RegionLoadResult.quarantineFailed(moveEx);
+        } catch (EOFException | UTFDataFormatException e) {
+            return handleDiagnosedCorruption(rx, rz, path, e);
+        } catch (IOException e) {
+            if (isDiagnosedCorruption(e)) {
+                return handleDiagnosedCorruption(rx, rz, path, e);
+            } else {
+                DistantDecorations.LOGGER.error("Read/I/O error parsing region file {} for {}: {}", path, getLevelIdentifier(), e.getMessage());
+                blockedRegions.add(packRegionKey(rx, rz));
+                return RegionLoadResult.readError(e);
             }
+        }
+    }
+
+    private boolean isDiagnosedCorruption(IOException e) {
+        String msg = e.getMessage();
+        if (msg == null) {
+            return false;
+        }
+        return msg.contains("Invalid region file magic")
+            || msg.contains("Unsupported region format version")
+            || msg.contains("Invalid or corrupted decoration payload length");
+    }
+
+    private RegionLoadResult handleDiagnosedCorruption(int rx, int rz, Path path, Throwable cause) {
+        DistantDecorations.LOGGER.error("Diagnosed corrupt region file {} for {}: {}", path, getLevelIdentifier(), cause.getMessage());
+        Path corruptPath = storageDir.resolve("r." + rx + "." + rz + ".dat.corrupt." + System.currentTimeMillis() + "." + UUID.randomUUID());
+        try {
+            moveFileToQuarantine(path, corruptPath);
+            DistantDecorations.LOGGER.warn("Quarantined corrupt region file {} to {}", path, corruptPath);
+            return RegionLoadResult.quarantined(cause);
+        } catch (IOException moveEx) {
+            DistantDecorations.LOGGER.error("Failed to quarantine corrupt region file {}: cannot move to {}", path, corruptPath, moveEx);
+            blockedRegions.add(packRegionKey(rx, rz));
+            return RegionLoadResult.quarantineFailed(moveEx);
         }
     }
 
     @Nullable
     public ServerDecorationRegion loadRegionFromFile(int rx, int rz) {
         RegionLoadResult result = loadRegionFromFileWithResult(rx, rz);
-        return result.region();
+        switch (result.status()) {
+            case SUCCESS -> {
+                return result.region();
+            }
+            case MISSING, QUARANTINED -> {
+                return null;
+            }
+            case READ_ERROR, QUARANTINE_FAILED -> {
+                blockedRegions.add(packRegionKey(rx, rz));
+                throw new RegionStorageException("Cannot load region [" + rx + ", " + rz + "]: " + result.status(), result.cause());
+            }
+            default -> throw new IllegalStateException("Unhandled load status: " + result.status());
+        }
     }
 
     public boolean saveRegionToFile(ServerDecorationRegion region) {
