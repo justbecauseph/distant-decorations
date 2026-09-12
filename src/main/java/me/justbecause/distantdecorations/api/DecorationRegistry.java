@@ -25,6 +25,11 @@ public final class DecorationRegistry {
         PROVIDERS.put(provider.type().id(), provider);
     }
 
+    public static void unregisterProvider(Identifier id) {
+        PROVIDERS.remove(id);
+        TYPES.remove(id);
+    }
+
     @Nullable
     @SuppressWarnings("unchecked")
     public static <T> DecorationType<T> getType(Identifier id) {

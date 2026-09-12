@@ -6,73 +6,93 @@ import me.justbecause.distantdecorations.api.DecorationRecord;
 import me.justbecause.distantdecorations.api.DecorationRegistry;
 import me.justbecause.distantdecorations.api.DecorationType;
 import me.justbecause.distantdecorations.server.ServerDecorationManager;
+import me.justbecause.distantdecorations.server.storage.ServerDecorationRegion;
 import me.justbecause.distantdecorations.server.storage.ServerDecorationWorldIndex;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
-import net.minecraft.core.Holder;
-import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.util.RandomSource;
-import net.minecraft.world.entity.decoration.painting.PaintingVariant;
-import net.minecraft.world.entity.decoration.painting.PaintingVariants;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.AABB;
 import org.jetbrains.annotations.Nullable;
 
-import java.lang.reflect.Method;
-import java.util.UUID;
-
 public class DistantDecorationsIntegrationGameTest {
 
-    private static final Identifier TEST_TYPE_ID = DistantDecorations.id("test_decoration");
-    private static final DecorationType<String> TEST_TYPE = new DecorationType<>(
-        TEST_TYPE_ID,
+    private static final Identifier BARREL_TEST_TYPE_ID = DistantDecorations.id("test_barrel_decoration");
+    private static final DecorationType<String> BARREL_TEST_TYPE = new DecorationType<>(
+        BARREL_TEST_TYPE_ID,
         (data, buf) -> buf.writeUtf(data),
         buf -> buf.readUtf()
     );
 
     @GameTest
     public void testProviderCaptureAndPublish(GameTestHelper helper) {
-        BlockPos wallPos = new BlockPos(2, 2, 2);
-        helper.setBlock(wallPos, Blocks.STONE);
+        BlockPos barrelPos = new BlockPos(2, 2, 2);
+        helper.setBlock(barrelPos, Blocks.BARREL);
 
         ServerLevel level = helper.getLevel();
-        BlockPos absPos = helper.absolutePos(wallPos);
+        BlockPos absPos = helper.absolutePos(barrelPos);
+        BlockEntity barrelBe = level.getBlockEntity(absPos);
+        helper.assertTrue(barrelBe != null, "Barrel block entity was not created");
 
-        // Register custom test provider
+        // Register fixture provider that genuinely matches BarrelBlockEntity
         DecorationProvider<String> provider = new DecorationProvider<>() {
             @Override
             public DecorationType<String> type() {
-                return TEST_TYPE;
+                return BARREL_TEST_TYPE;
             }
 
             @Override
             public boolean matches(BlockEntity blockEntity) {
-                return false;
+                return blockEntity.getBlockState().is(Blocks.BARREL);
             }
 
             @Override
-            public @Nullable String capture(ServerLevel level, BlockPos pos, BlockEntity blockEntity) {
-                return "test-data";
+            public @Nullable String capture(ServerLevel lvl, BlockPos pos, BlockEntity be) {
+                return "barrel-data-payload";
             }
 
             @Override
-            public AABB calculateBounds(ServerLevel level, BlockPos pos, String data) {
+            public AABB calculateBounds(ServerLevel lvl, BlockPos pos, String data) {
                 return new AABB(pos.getX(), pos.getY(), pos.getZ(), pos.getX() + 1, pos.getY() + 1, pos.getZ() + 1);
             }
         };
         DecorationRegistry.registerProvider(provider);
 
-        ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
-        helper.assertTrue(index != null, "DistantDecorations server index is null");
+        try {
+            ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
+            helper.assertTrue(index != null, "DistantDecorations server index is null");
 
-        helper.succeed();
+            // 1. Publish captures and indexes the real barrel decoration
+            DecorationRecord record = index.publish(absPos, barrelBe);
+            helper.assertTrue(record != null, "Decoration record was null after publish");
+            helper.assertTrue(record.id().anchor().equals(absPos), "Decoration anchor mismatch");
+            helper.assertTrue(record.id().type().equals(BARREL_TEST_TYPE_ID), "Decoration type mismatch");
+
+            int rx = ServerDecorationWorldIndex.chunkToRegionCoord(absPos.getX() >> 4);
+            int rz = ServerDecorationWorldIndex.chunkToRegionCoord(absPos.getZ() >> 4);
+            ServerDecorationRegion region = index.getRegion(rx, rz);
+            helper.assertTrue(region != null, "Region was not created for published decoration");
+            helper.assertTrue(region.getRecord(record.id()) != null, "Record missing from region");
+            long firstRevision = record.revision();
+
+            // 2. Unchanged capture is a no-op (same record, revision not incremented)
+            DecorationRecord unchanged = index.publish(absPos, barrelBe);
+            helper.assertTrue(unchanged == record, "Unchanged publish did not return identical record instance");
+            helper.assertTrue(unchanged.revision() == firstRevision, "Unchanged publish incremented revision");
+
+            // 3. Removal via index removes the decoration and increments revision
+            boolean removed = index.remove(absPos);
+            helper.assertTrue(removed, "index.remove() failed for existing decoration");
+            helper.assertTrue(region.getRecord(record.id()) == null, "Record not removed from region");
+            helper.assertTrue(region.revision() > firstRevision, "Removal did not increment region revision");
+
+            helper.succeed();
+        } finally {
+            DecorationRegistry.unregisterProvider(BARREL_TEST_TYPE_ID);
+        }
     }
 
     @GameTest
@@ -113,33 +133,36 @@ public class DistantDecorationsIntegrationGameTest {
             }
         });
 
-        ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
-        helper.assertTrue(index != null, "DistantDecorations server index is null");
-        DecorationRecord record = index.publish(absolutePos, blockEntity);
-        helper.assertTrue(record != null, "Test decoration was not published");
+        try {
+            ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
+            helper.assertTrue(index != null, "DistantDecorations server index is null");
+            DecorationRecord record = index.publish(absolutePos, blockEntity);
+            helper.assertTrue(record != null, "Test decoration was not published");
 
-        // Chunk unloading marks its block entities removed without meaning the backing block was destroyed.
-        blockEntity.setRemoved();
-        int regionX = ServerDecorationWorldIndex.chunkToRegionCoord(absolutePos.getX() >> 4);
-        int regionZ = ServerDecorationWorldIndex.chunkToRegionCoord(absolutePos.getZ() >> 4);
-        helper.assertTrue(
-            index.getRegion(regionX, regionZ).getRecord(record.id()) != null,
-            "BlockEntity.setRemoved() deleted a persistent decoration record"
-        );
-        blockEntity.clearRemoved();
+            // Chunk unloading marks its block entities removed without meaning the backing block was destroyed.
+            blockEntity.setRemoved();
+            int regionX = ServerDecorationWorldIndex.chunkToRegionCoord(absolutePos.getX() >> 4);
+            int regionZ = ServerDecorationWorldIndex.chunkToRegionCoord(absolutePos.getZ() >> 4);
+            helper.assertTrue(
+                index.getRegion(regionX, regionZ).getRecord(record.id()) != null,
+                "BlockEntity.setRemoved() deleted a persistent decoration record"
+            );
+            blockEntity.clearRemoved();
 
-        helper.succeed();
+            helper.succeed();
+        } finally {
+            DecorationRegistry.unregisterProvider(typeId);
+        }
     }
 
     @GameTest
-    public void testVoxyCoexistence(GameTestHelper helper) {
+    public void testMultiDimensionWorldIndexInitialization(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
-        helper.assertTrue(index != null, "DistantDecorations server index is null with Voxy active");
+        helper.assertTrue(index != null, "DistantDecorations server index is null");
 
-        // Verify world dimensions indexing works alongside Voxy's storage backend
+        // Verify world dimensions indexing works for server level
         helper.assertTrue(level.dimension() != null, "ServerLevel dimension is null");
         helper.succeed();
     }
 }
-
