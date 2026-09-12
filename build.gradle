@@ -70,10 +70,12 @@ dependencies {
     compileOnly "maven.modrinth:chunky:${project.chunky_version}"
     compileOnly "maven.modrinth:voxy:${project.voxy_version}"
 
-    // Integration benchmark runtime
-    runtimeOnly "maven.modrinth:voxy:${project.voxy_version}"
-    runtimeOnly "maven.modrinth:sodium:${project.sodium_version}"
-    runtimeOnly "maven.modrinth:spark:${project.spark_version}"
+    // Integration benchmark runtime (isolated; opt-in via -PenableBenchmarkMods=true)
+    if (project.hasProperty("enableBenchmarkMods") && project.property("enableBenchmarkMods").toString().toBoolean()) {
+        runtimeOnly "maven.modrinth:voxy:${project.voxy_version}"
+        runtimeOnly "maven.modrinth:sodium:${project.sodium_version}"
+        runtimeOnly "maven.modrinth:spark:${project.spark_version}"
+    }
 
     // Tests
     testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
