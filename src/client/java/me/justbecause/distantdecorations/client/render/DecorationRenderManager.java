@@ -61,7 +61,8 @@ public final class DecorationRenderManager {
     }
 
     public void renderFrame(LevelRenderContext context) {
-        if (!me.justbecause.distantdecorations.config.DistantDecorationsConfig.isMasterEnabled()) {
+        if (!me.justbecause.distantdecorations.config.DistantDecorationsConfig.isMasterEnabled()
+                || !me.justbecause.distantdecorations.config.DistantDecorationsConfig.isClientRenderingEnabled()) {
             return;
         }
 

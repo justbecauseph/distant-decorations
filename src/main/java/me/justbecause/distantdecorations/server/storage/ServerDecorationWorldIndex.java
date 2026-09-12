@@ -251,7 +251,11 @@ public final class ServerDecorationWorldIndex {
             boolean isSubscribed = activeSubscribedRegions.contains(key);
             if (!isSubscribed && (now - region.getLastAccessTime()) > RESIDENCY_TIMEOUT_MS) {
                 if (region.isDirty()) {
-                    saveRegionToFile(region);
+                    boolean saved = saveRegionToFile(region);
+                    if (!saved) {
+                        DistantDecorations.LOGGER.warn("Retaining dirty region [{}, {}] in memory because save failed during maintenance eviction", region.regionX(), region.regionZ());
+                        continue;
+                    }
                 }
                 iterator.remove();
                 indexedDecorationCount.addAndGet(-region.size());
@@ -270,7 +274,7 @@ public final class ServerDecorationWorldIndex {
     }
 
     @Nullable
-    private ServerDecorationRegion loadRegionFromFile(int rx, int rz) {
+    public ServerDecorationRegion loadRegionFromFile(int rx, int rz) {
         Path path = getRegionFilePath(rx, rz);
         if (!Files.exists(path)) {
             return null;
@@ -278,14 +282,21 @@ public final class ServerDecorationWorldIndex {
         try (DataInputStream dis = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
             return ServerDecorationRegion.readFromStream(dis);
         } catch (Exception e) {
-            DistantDecorations.LOGGER.error("Failed to load region file {} for {}", path, level != null ? level.dimension().identifier() : "test", e);
+            DistantDecorations.LOGGER.error("Failed to load region file {} for {}: corrupted or unreadable", path, level != null ? level.dimension().identifier() : "test", e);
+            Path corruptPath = storageDir.resolve("r." + rx + "." + rz + ".dat.corrupt." + System.currentTimeMillis());
+            try {
+                Files.move(path, corruptPath, StandardCopyOption.REPLACE_EXISTING);
+                DistantDecorations.LOGGER.warn("Quarantined corrupt region file {} to {}", path, corruptPath);
+            } catch (IOException moveEx) {
+                DistantDecorations.LOGGER.error("Failed to quarantine corrupt region file {}", path, moveEx);
+            }
             return null;
         }
     }
 
-    public void saveRegionToFile(ServerDecorationRegion region) {
+    public boolean saveRegionToFile(ServerDecorationRegion region) {
         if (!region.isDirty()) {
-            return;
+            return true;
         }
         Path path = getRegionFilePath(region.regionX(), region.regionZ());
         Path tempPath = storageDir.resolve("r." + region.regionX() + "." + region.regionZ() + ".dat.tmp");
@@ -293,22 +304,40 @@ public final class ServerDecorationWorldIndex {
             try (DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(tempPath)))) {
                 region.writeToStream(dos);
             }
-            Files.move(tempPath, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            try {
+                Files.move(tempPath, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException moveEx) {
+                Files.move(tempPath, path, StandardCopyOption.REPLACE_EXISTING);
+            }
             region.markClean();
+            return true;
         } catch (Exception e) {
-            DistantDecorations.LOGGER.error("Failed to save region file {} for {}", path, level.dimension().identifier(), e);
+            DistantDecorations.LOGGER.error("Failed to save region file {} for {}", path, level != null ? level.dimension().identifier() : "test", e);
+            try {
+                Files.deleteIfExists(tempPath);
+            } catch (IOException ignored) {}
+            return false;
         }
     }
 
-    public void saveAll() {
+    public boolean saveAll() {
+        boolean allSuccess = true;
         for (ServerDecorationRegion region : loadedRegions.values()) {
-            saveRegionToFile(region);
+            if (!saveRegionToFile(region)) {
+                allSuccess = false;
+            }
         }
+        return allSuccess;
     }
 
-    public void close() {
-        saveAll();
-        loadedRegions.clear();
+    public boolean close() {
+        boolean saved = saveAll();
+        if (saved) {
+            loadedRegions.clear();
+        } else {
+            DistantDecorations.LOGGER.error("close() failed to persist all regions cleanly for {}", level != null ? level.dimension().identifier() : "test");
+        }
+        return saved;
     }
 }
 

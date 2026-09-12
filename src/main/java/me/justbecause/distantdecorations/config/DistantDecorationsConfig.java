@@ -5,6 +5,7 @@ import net.minecraft.resources.Identifier;
 public final class DistantDecorationsConfig {
 
     private static volatile boolean masterEnabled = !Boolean.getBoolean("distantdecorations.disabled");
+    private static volatile boolean clientRenderingEnabled = !Boolean.getBoolean("distantdecorations.client_rendering_disabled");
     private static volatile boolean benchmarkMode = Boolean.getBoolean("distantdecorations.benchmark_mode");
     private static volatile int clientSubscriptionRadiusChunks = Integer.getInteger("distantdecorations.subscription_radius_chunks", 512);
     private static volatile double minProjectedPixelSize = Double.parseDouble(System.getProperty("distantdecorations.min_projected_pixel_size", "0.10"));
@@ -20,6 +21,14 @@ public final class DistantDecorationsConfig {
 
     public static void setMasterEnabled(boolean enabled) {
         masterEnabled = enabled;
+    }
+
+    public static boolean isClientRenderingEnabled() {
+        return clientRenderingEnabled;
+    }
+
+    public static void setClientRenderingEnabled(boolean enabled) {
+        clientRenderingEnabled = enabled;
     }
 
     public static boolean isBenchmarkMode() {

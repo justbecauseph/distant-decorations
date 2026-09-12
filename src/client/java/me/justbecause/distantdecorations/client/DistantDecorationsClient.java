@@ -64,9 +64,9 @@ public class DistantDecorationsClient implements ClientModInitializer {
                     )
                     .then(com.mojang.brigadier.builder.LiteralArgumentBuilder.<FabricClientCommandSource>literal("toggle")
                         .executes(ctx -> {
-                            boolean next = !DistantDecorationsConfig.isMasterEnabled();
-                            DistantDecorationsConfig.setMasterEnabled(next);
-                            ctx.getSource().sendFeedback(Component.literal("§a[Distant Decorations Client]§r Master enabled: " + next));
+                            boolean next = !DistantDecorationsConfig.isClientRenderingEnabled();
+                            DistantDecorationsConfig.setClientRenderingEnabled(next);
+                            ctx.getSource().sendFeedback(Component.literal("§a[Distant Decorations Client]§r Rendering enabled: " + next));
                             return 1;
                         })
                     )
