@@ -23,14 +23,55 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-public final class ServerDecorationWorldIndex {
+public class ServerDecorationWorldIndex {
     public static final int CHUNKS_PER_REGION_AXIS = 32;
     public static final long RESIDENCY_TIMEOUT_MS = 60_000L; // 60 seconds
     public static final int MAX_DIRTY_FLUSH_PER_CYCLE = 10;
 
+    public enum RegionLoadStatus {
+        SUCCESS,
+        MISSING,
+        QUARANTINED,
+        QUARANTINE_FAILED,
+        READ_ERROR
+    }
+
+    public record RegionLoadResult(RegionLoadStatus status, @Nullable ServerDecorationRegion region, @Nullable Throwable cause) {
+        public static RegionLoadResult success(ServerDecorationRegion region) {
+            return new RegionLoadResult(RegionLoadStatus.SUCCESS, region, null);
+        }
+
+        public static RegionLoadResult missing() {
+            return new RegionLoadResult(RegionLoadStatus.MISSING, null, null);
+        }
+
+        public static RegionLoadResult quarantined(Throwable cause) {
+            return new RegionLoadResult(RegionLoadStatus.QUARANTINED, null, cause);
+        }
+
+        public static RegionLoadResult quarantineFailed(Throwable cause) {
+            return new RegionLoadResult(RegionLoadStatus.QUARANTINE_FAILED, null, cause);
+        }
+
+        public static RegionLoadResult readError(Throwable cause) {
+            return new RegionLoadResult(RegionLoadStatus.READ_ERROR, null, cause);
+        }
+    }
+
+    public static class RegionStorageException extends RuntimeException {
+        public RegionStorageException(String message) {
+            super(message);
+        }
+
+        public RegionStorageException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
     private final ServerLevel level;
     private final Path storageDir;
     private final Map<Long, ServerDecorationRegion> loadedRegions = new ConcurrentHashMap<>();
+    private final Set<Long> blockedRegions = ConcurrentHashMap.newKeySet();
 
     public ServerDecorationWorldIndex(ServerLevel level, Path storageDir) {
         this.level = level;
@@ -38,7 +79,7 @@ public final class ServerDecorationWorldIndex {
         try {
             Files.createDirectories(storageDir);
         } catch (IOException e) {
-            DistantDecorations.LOGGER.error("Failed to create storage directory for {}", level.dimension().identifier(), e);
+            DistantDecorations.LOGGER.error("Failed to create storage directory for {}", level != null ? level.dimension().identifier() : "test", e);
         }
     }
 
@@ -57,18 +98,45 @@ public final class ServerDecorationWorldIndex {
         return level;
     }
 
+    public boolean isRegionBlocked(int regionX, int regionZ) {
+        return blockedRegions.contains(packRegionKey(regionX, regionZ));
+    }
+
+    public void unblockRegion(int regionX, int regionZ) {
+        blockedRegions.remove(packRegionKey(regionX, regionZ));
+    }
+
     public ServerDecorationRegion getOrCreateRegion(int regionX, int regionZ) {
-        return loadedRegions.computeIfAbsent(packRegionKey(regionX, regionZ), k -> {
-            ServerDecorationRegion loaded = loadRegionFromFile(regionX, regionZ);
-            if (loaded != null) {
-                TelemetryMetrics.SERVER_REGIONS.incrementAndGet();
-                indexedDecorationCount.addAndGet(loaded.size());
-                TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(indexedDecorationCount.get());
-                return loaded;
+        long key = packRegionKey(regionX, regionZ);
+        if (blockedRegions.contains(key)) {
+            throw new RegionStorageException("Region [" + regionX + ", " + regionZ + "] is blocked due to prior quarantine/read failure");
+        }
+        return loadedRegions.computeIfAbsent(key, k -> {
+            RegionLoadResult result = loadRegionFromFileWithResult(regionX, regionZ);
+            switch (result.status()) {
+                case SUCCESS -> {
+                    ServerDecorationRegion loaded = result.region();
+                    TelemetryMetrics.SERVER_REGIONS.incrementAndGet();
+                    indexedDecorationCount.addAndGet(loaded.size());
+                    TelemetryMetrics.SERVER_INDEXED_DECORATIONS.set(indexedDecorationCount.get());
+                    return loaded;
+                }
+                case MISSING -> {
+                    ServerDecorationRegion newRegion = new ServerDecorationRegion(regionX, regionZ);
+                    TelemetryMetrics.SERVER_REGIONS.incrementAndGet();
+                    return newRegion;
+                }
+                case QUARANTINED -> {
+                    ServerDecorationRegion newRegion = new ServerDecorationRegion(regionX, regionZ);
+                    TelemetryMetrics.SERVER_REGIONS.incrementAndGet();
+                    return newRegion;
+                }
+                case QUARANTINE_FAILED, READ_ERROR -> {
+                    blockedRegions.add(key);
+                    throw new RegionStorageException("Cannot initialize or replace region [" + regionX + ", " + regionZ + "]: corrupt file remains on disk because quarantine failed", result.cause());
+                }
+                default -> throw new IllegalStateException("Unhandled region load status: " + result.status());
             }
-            ServerDecorationRegion newRegion = new ServerDecorationRegion(regionX, regionZ);
-            TelemetryMetrics.SERVER_REGIONS.incrementAndGet();
-            return newRegion;
         });
     }
 
@@ -118,7 +186,13 @@ public final class ServerDecorationWorldIndex {
         int rx = chunkToRegionCoord(chunkX);
         int rz = chunkToRegionCoord(chunkZ);
 
-        ServerDecorationRegion region = getOrCreateRegion(rx, rz);
+        ServerDecorationRegion region;
+        try {
+            region = getOrCreateRegion(rx, rz);
+        } catch (RegionStorageException e) {
+            DistantDecorations.LOGGER.error("Cannot publish decoration at {} because region [{}, {}] is blocked: {}", pos, rx, rz, e.getMessage());
+            return null;
+        }
         DecorationId id = new DecorationId(provider.type().id(), level.dimension(), pos);
 
         // Change detection: If unchanged, NO-OP!
@@ -184,7 +258,13 @@ public final class ServerDecorationWorldIndex {
         ChunkPos chunkPos = chunk.getPos();
         int rx = chunkToRegionCoord(chunkPos.x());
         int rz = chunkToRegionCoord(chunkPos.z());
-        ServerDecorationRegion region = getOrCreateRegion(rx, rz);
+        ServerDecorationRegion region;
+        try {
+            region = getOrCreateRegion(rx, rz);
+        } catch (RegionStorageException e) {
+            DistantDecorations.LOGGER.error("Cannot reconcile chunk {} because region [{}, {}] is blocked: {}", chunkPos, rx, rz, e.getMessage());
+            return;
+        }
 
         Map<BlockPos, BlockEntity> blockEntities = chunk.getBlockEntities();
         Set<BlockPos> presentSupportedPositions = new HashSet<>();
@@ -273,30 +353,48 @@ public final class ServerDecorationWorldIndex {
         return storageDir.resolve("r." + rx + "." + rz + ".dat");
     }
 
-    @Nullable
-    public ServerDecorationRegion loadRegionFromFile(int rx, int rz) {
+    protected void moveFileToQuarantine(Path source, Path target) throws IOException {
+        Files.move(source, target);
+    }
+
+    public RegionLoadResult loadRegionFromFileWithResult(int rx, int rz) {
         Path path = getRegionFilePath(rx, rz);
         if (!Files.exists(path)) {
-            return null;
+            return RegionLoadResult.missing();
         }
         try (DataInputStream dis = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
-            return ServerDecorationRegion.readFromStream(dis);
+            ServerDecorationRegion loaded = ServerDecorationRegion.readFromStream(dis);
+            return RegionLoadResult.success(loaded);
         } catch (Exception e) {
-            DistantDecorations.LOGGER.error("Failed to load region file {} for {}: corrupted or unreadable", path, level != null ? level.dimension().identifier() : "test", e);
-            Path corruptPath = storageDir.resolve("r." + rx + "." + rz + ".dat.corrupt." + System.currentTimeMillis());
+            DistantDecorations.LOGGER.error("Failed to load region file {} for {}: corrupted or unreadable",
+                path, level != null ? level.dimension().identifier() : "test", e);
+            Path corruptPath = storageDir.resolve("r." + rx + "." + rz + ".dat.corrupt." + System.currentTimeMillis() + "." + UUID.randomUUID());
             try {
-                Files.move(path, corruptPath, StandardCopyOption.REPLACE_EXISTING);
+                moveFileToQuarantine(path, corruptPath);
                 DistantDecorations.LOGGER.warn("Quarantined corrupt region file {} to {}", path, corruptPath);
+                return RegionLoadResult.quarantined(e);
             } catch (IOException moveEx) {
-                DistantDecorations.LOGGER.error("Failed to quarantine corrupt region file {}", path, moveEx);
+                DistantDecorations.LOGGER.error("Failed to quarantine corrupt region file {}: cannot move to {}", path, corruptPath, moveEx);
+                return RegionLoadResult.quarantineFailed(moveEx);
             }
-            return null;
         }
+    }
+
+    @Nullable
+    public ServerDecorationRegion loadRegionFromFile(int rx, int rz) {
+        RegionLoadResult result = loadRegionFromFileWithResult(rx, rz);
+        return result.region();
     }
 
     public boolean saveRegionToFile(ServerDecorationRegion region) {
         if (!region.isDirty()) {
             return true;
+        }
+        long key = packRegionKey(region.regionX(), region.regionZ());
+        if (blockedRegions.contains(key)) {
+            DistantDecorations.LOGGER.error("Refusing to save region [{}, {}]: region is blocked due to load/quarantine failure",
+                region.regionX(), region.regionZ());
+            return false;
         }
         Path path = getRegionFilePath(region.regionX(), region.regionZ());
         Path tempPath = storageDir.resolve("r." + region.regionX() + "." + region.regionZ() + ".dat.tmp");

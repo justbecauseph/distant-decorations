@@ -4,16 +4,16 @@
 
 - **Current Branch**: `port/minecraft-26.3`
 - **Starting Revision**: `91238d40ed70779f0e5172c0808fe0b7fc03bb79` (derived from inspected revision `1a7fba91c3561a3264e6d2ffce68b146f02f5930`)
-- **Current Phase**: Phase 0 Complete, Phase 1 Regression Coverage Established & Baseline Safety Fixes Applied.
+- **Current Phase**: Phase 0 Complete, Phase 1 & Phase 1.1 Complete (Persistence, Lifecycle, Dependency, and Test Hardening).
 - **Review Gate**: Keeping Minecraft at `26.2` for baseline verification before initiating Phase 2 (26.3 dependency/API port).
-- **Toolchain Tuple**:
+- **Toolchain Tuple Reconciliation**:
   - JDK: `25.0.4+7-LTS` (Azul Zulu, `C:\Program Files\Zulu\zulu-25`)
   - Gradle: `9.5.1`
   - Loom: `1.17.20` (`1.17-SNAPSHOT`)
-  - Fabric Loader: `0.19.3` / `0.19.5`
   - Target Minecraft: `26.2`
-  - Fabric API: `0.158.0+26.2`
   - Mod Version: `0.2.0`
+  - *Initial Phase 0 Inspected Baseline*: Fabric Loader `0.19.3` / Fabric API `0.158.0+26.2`
+  - *Reviewed Baseline (commit `24410a0`)*: Fabric Loader `0.19.5` / Fabric API `0.160.0+26.2`
 
 ---
 
@@ -46,7 +46,7 @@
   - Leaked into the published Maven POM (`pom-default.xml`) as `<scope>runtime</scope>` dependencies and into Gradle `module.json` under `runtimeElements`. Any downstream consumer declaring a dependency on `distant-decorations` would pull in Voxy, Sodium, and Spark transitively.
 - **Remediation**:
   - Gated benchmark dependencies behind `enableBenchmarkMods` property in `build.gradle` (default `false`).
-  - Verified `generatePomFileForMavenJavaPublication` and `generateMetadataFileForMavenJavaPublication`: POM and module metadata now strictly contain only `fabric-loader` and `fabric-api`.
+  - Verified `generatePomFileForMavenJavaPublication` and `generateMetadataFileForMavenJavaPublication`: POM and module metadata strictly contain only `fabric-loader` and `fabric-api`.
   - Verified `runGameTest`: mod count reduced from 59 to 44, mixin warnings and profiler overhead completely eliminated.
 
 ---
@@ -63,12 +63,6 @@
   - Added `clientRenderingEnabled` (with `isClientRenderingEnabled()` and `setClientRenderingEnabled()`) in `DistantDecorationsConfig`.
   - Updated `/ddc toggle` to toggle `clientRenderingEnabled` only, leaving server `masterEnabled` untouched.
   - Updated `DecorationRenderManager.renderFrame` to check both `isMasterEnabled()` and `isClientRenderingEnabled()`.
-- **Regression Coverage**:
-  - Added `CommandAuthorizationRegressionTest`:
-    - `testNonOperatorCannotExecuteServerToggle()`: asserts syntax error/disallowed when executed by player without permissions.
-    - `testOperatorCanExecuteServerToggle()`: asserts operator successfully toggles server master state.
-    - `testOrdinaryPlayerCanExecuteStatsCommand()`: asserts non-op player can read stats.
-    - `testClientToggleIsIndependentOfServerMasterSwitch()`: asserts client toggle does not affect server switch.
 
 ### 2. Failure-Safe Persistence [S3]
 - **Finding**:
@@ -82,18 +76,64 @@
   - Updated `performMaintenance()`: if `region.isDirty()` and `!saveRegionToFile(region)`, eviction is skipped and the region is retained in memory with a warning log.
   - Updated `loadRegionFromFile()`: when a region file is corrupt or unreadable, it is quarantined to `r.X.Z.dat.corrupt.<timestamp>` rather than quietly ignored.
   - Updated `saveAll()` and `close()` to return `boolean` reflecting whether all regions persisted cleanly.
-- **Regression Coverage**:
-  - Added `StorageSafetyRegressionTest`:
-    - `testFailedSaveDoesNotEvictDirtyRegion()`: verifies dirty region retention upon save failure.
-    - `testCorruptRegionFileIsQuarantined()`: verifies invalid magic/corrupt file is moved to `.corrupt.<timestamp>` and original path cleared.
-    - `testSuccessfulSaveEvictsCleanRegionAfterResidencyTimeout()`: verifies normal residency eviction occurs cleanly upon successful save.
 
 ### 3. Truthful Provider & GameTests [S8]
 - **Remediation**:
   - Updated `DistantDecorationsIntegrationGameTest`:
     - `testProviderCaptureAndPublish`: Rewritten to use a fixture provider matching `Blocks.BARREL`. Verifies real provider matching, decoration publishing, correct coordinate anchor and type registration in the world index, verify that re-publishing identical unchanged state is a no-op (same record reference, revision unchanged), and verifies that index removal removes the record and increments revision.
     - Provider registration cleanup: added `DecorationRegistry.unregisterProvider(Identifier)` and cleaned up test providers in `finally` blocks to prevent test pollution across batches.
-    - `testVoxyCoexistence`: Renamed to `testMultiDimensionWorldIndexInitialization` to accurately state that it tests multi-dimensional server index initialization, avoiding false claims of GPU/Voxy depth composition testing.
+    - `testVoxyCoexistence`: Renamed to accurately describe its scope, avoiding false claims of GPU/Voxy depth composition testing.
+
+---
+
+## Phase 1.1 — Focused Persistence, Dependency & Test Hardening
+
+Following peer review of commit `c89dfac`, a focused Phase 1.1 pass was executed while strictly retaining Minecraft at `26.2` to resolve persistence edge-cases, structural dependency isolation, and regression rigor before proceeding to Phase 2.
+
+### 1. Persistence Quarantine Failure & Overwrite Prevention (P1)
+- **Finding**: If `Files.move(..., corruptPath)` failed during region loading (e.g. disk locks, permissions), `loadRegionFromFile()` returned `null`. `getOrCreateRegion()` interpreted `null` as an ordinary cache miss, created a blank `ServerDecorationRegion`, and subsequent flushes overwrote the un-quarantined corrupt file on disk, permanently destroying forensic evidence.
+- **Remediation**:
+  - Implemented `RegionLoadStatus` (`SUCCESS`, `MISSING`, `QUARANTINED`, `QUARANTINE_FAILED`, `READ_ERROR`) and `RegionLoadResult`.
+  - Introduced `blockedRegions` tracking set in `ServerDecorationWorldIndex`.
+  - If a file is corrupt and quarantine fails, the region key is added to `blockedRegions` and a `RegionStorageException` is thrown.
+  - `getOrCreateRegion()` refuses to initialize or replace a blocked region.
+  - `saveRegionToFile()` checks `blockedRegions` and refuses to write, preventing any rogue save from overwriting the corrupt file.
+  - `publishTyped()` and `reconcileChunk()` catch `RegionStorageException` gracefully without crashing the server or tick loop.
+  - Quarantine filenames use collision-resistant naming (`r.X.Z.dat.corrupt.<timestamp>.<uuid>`) and avoid `REPLACE_EXISTING` during quarantine moves to prevent accidental clobbering of earlier quarantine archives.
+  - `moveFileToQuarantine()` hook exposed for deterministic testing of quarantine move failures.
+
+### 2. ServerDecorationManager Lifecycle Recovery Ownership (P1)
+- **Finding**: `ServerLevelEvents.UNLOAD` called `worldIndices.remove(level.dimension())` before calling `index.close()`. If `close()` failed, the index was already dropped from memory, permanently losing unsaved state with no retry mechanism. Additionally, `ServerLifecycleEvents.SERVER_STOPPING` cleared `worldIndices` unconditionally without tracking or reporting unpersisted dimensions.
+- **Remediation**:
+  - Introduced `pendingRecoveryIndices` queue in `ServerDecorationManager`.
+  - Extracted `handleLevelUnload(dimension)`: if `index.close()` fails on level unload, the index is removed from live lookups but retained in `pendingRecoveryIndices`.
+  - Implemented `retryPendingRecovery(dimension)` to allow bounded recovery attempts.
+  - Extracted `handleServerStopping()`: attempts to close all live indices and retries all pending recovery indices. If any fail, a critical error is logged reporting all unpersisted dimensions, and returns `false`.
+
+### 3. Structural, Unconditional Benchmark Dependency Isolation (P2)
+- **Finding**: Declaring `voxy`, `sodium`, and `spark` under `runtimeOnly` behind `-PenableBenchmarkMods=true` still polluted `from components.java` (`runtimeElements`) whenever the property was enabled.
+- **Remediation**:
+  - Established a standalone `benchmarkRuntime` configuration in `build.gradle` (`canBeResolved = true; canBeConsumed = false`).
+  - Gated benchmark dependencies strictly to `benchmarkRuntime`, keeping `runtimeClasspath` and `components.java` completely decoupled.
+  - Added `tasks.matching { it.name == "runIntegrationClient" }.configureEach { classpath += configurations.benchmarkRuntime }` to supply benchmark mods solely to the benchmark client run task.
+  - Added an active `pom.withXml` assertion in `publishing.publications.mavenJava` that fails the build if `voxy`, `sodium`, or `spark` ever enter the publication POM.
+  - Verified with both `-PenableBenchmarkMods=false` and `-PenableBenchmarkMods=true`: both `pom-default.xml` and Gradle `module.json` contain strictly `fabric-loader` and `fabric-api`.
+
+### 4. Strengthened Regression Tests & Truthful GameTest
+- **`CommandAuthorizationRegressionTest`**:
+  - Extracted `DistantDecorationsClient.registerClientCommands(dispatcher)` as a public static method.
+  - Added tests executing the actual Brigadier client command `/ddc toggle` using a `FabricClientCommandSource` dispatcher.
+  - Verified `/ddc toggle` under both server switch preconditions (`masterEnabled=true` and `masterEnabled=false`), asserting that `clientRenderingEnabled` toggles while `masterEnabled` remains unchanged.
+  - Verified exact minimum operator permission: `Permissions.COMMANDS_MODERATOR` (level 1) is rejected with syntax exception, while `Permissions.COMMANDS_GAMEMASTER` (level 2) succeeds.
+- **`StorageSafetyRegressionTest`**:
+  - Added `testCorruptFileWithQuarantineFailurePreventsOverwrite()`: verifies that when quarantine move fails, `getOrCreateRegion()` throws `RegionStorageException`, the region is blocked, `saveRegionToFile()` refuses write, and the corrupt file remains byte-for-byte identical on disk.
+  - Added `testServerDecorationManagerUnloadFailureRecovery()`: verifies unload failure retains index in `pendingRecoveryIndices` and subsequent `retryPendingRecovery()` successfully saves and clears the queue.
+  - Added `testServerDecorationManagerShutdownHandlesPendingRecovery()`: verifies shutdown lifecycle persistence.
+- **`DistantDecorationsIntegrationGameTest`**:
+  - Added explicit payload decode assertion (`"barrel-data-payload"`).
+  - Added exact bounding box assertion (`record.bounds()`).
+  - Added assertion verifying that `region.revision()` does not increment on unchanged publish no-ops.
+  - Truthfully renamed `testMultiDimensionWorldIndexInitialization` to `testWorldIndexInitialization` to accurately state that it tests world index initialization for the server level.
 
 ---
 
@@ -106,10 +146,11 @@
 | Provider Test | `ProviderTest.java` | 3 | PASS | Painting & picture frame data serialization, registry registration |
 | Server Storage & Net | `ServerStorageAndNetworkTest.java` | 7 | PASS | C2S/S2C packet roundtrips, region streams, maintenance tick throttle |
 | Spatial Index | `SpatialIndexTest.java` | 10 | PASS | Frustum culling, cell partitioning, multipart assembly, top-K selection |
-| Command Authorization | `CommandAuthorizationRegressionTest.java` | 4 | PASS | Operator permission check, stats accessibility, client/server toggle independence |
-| Storage Safety | `StorageSafetyRegressionTest.java` | 3 | PASS | Dirty region retention on failed save, corrupt file quarantine, timeout eviction |
-| **Total Unit Tests** | | **36** | **PASS** | `BUILD SUCCESSFUL in 10s` |
-| Integration GameTests | `DistantDecorationsIntegrationGameTest.java` | 4 | PASS | Minecraft `ALWAYS_PASS`, truthful fixture publish/noop/remove, lifecycle persistence, multi-dim index |
+| Command Authorization | `CommandAuthorizationRegressionTest.java` | 6 | PASS | Brigadier client toggle (both server switch states), exact GAMEMASTER permission boundary |
+| Storage Safety | `StorageSafetyRegressionTest.java` | 6 | PASS | Dirty retention, quarantine move, quarantine failure overwrite block, manager unload recovery queue |
+| **Total Unit Tests** | | **41** | **PASS** | `BUILD SUCCESSFUL in 12s` |
+| Integration GameTests | `DistantDecorationsIntegrationGameTest.java` | 4 | PASS | Minecraft `ALWAYS_PASS`, truthful barrel publish/payload/bounds/revision/remove, lifecycle persistence, index init |
+| **Total Automated Tests** | | **45** | **PASS** | Complete unit and GameTest suite passing |
 
 ---
 
@@ -143,16 +184,17 @@
 1. `8f8099a` — `test: establish standalone DD baseline and lifecycle fixtures`
 2. `a813e9f` — `build: isolate optional benchmark dependencies and publication metadata`
 3. `80a8f80` — `fix: authorize DD server controls and retain failed-save regions`
+4. `c89dfac` — `docs: record Phase 0 baseline and Phase 1 regression evidence in PROGRESS.md`
 
 ---
 
-## Review Gate Sign-off (Phase 0 & Phase 1)
+## Review Gate Sign-off (Phase 0, Phase 1 & Phase 1.1)
 
-- [x] Baseline test counts recorded and passing (36 unit tests, 4 GameTests).
-- [x] Optional dependency leakage isolated from POM, module metadata, and runtime classpath.
-- [x] Command authorization implemented and verified for `/dd toggle` and `/dd stats`.
-- [x] Independent client rendering toggle established for `/ddc toggle`.
-- [x] Storage failure safety verified (dirty regions retained on error; corrupt files quarantined).
-- [x] Truthful test fixtures created and passing in server GameTest runner.
+- [x] Baseline and regression test counts recorded and passing (41 unit tests, 4 GameTests = 45 automated tests).
+- [x] Benchmark dependencies structurally isolated in `benchmarkRuntime` configuration; POM and module metadata verified clean under both `-PenableBenchmarkMods=false` and `-PenableBenchmarkMods=true`.
+- [x] Command authorization verified via Brigadier for `/dd toggle` (exact GAMEMASTER level 2 requirement) and `/ddc toggle` (independent client switch under both server states).
+- [x] Storage failure safety verified: dirty retention on failed save, corrupt file quarantine, quarantine failure overwrite prevention with byte-for-byte preservation, manager unload recovery queue.
+- [x] Truthful test fixtures: barrel provider asserts decoded payload string, exact bounds, and revision invariance on unchanged publish.
+- [x] Toolchain baseline discrepancy reconciled in documentation (initial `0.19.3`/`0.158.0+26.2` vs reviewed `0.19.5`/`0.160.0+26.2`).
 - [x] Minecraft version strictly preserved at `26.2` for baseline gate.
-- [x] No production saves or Maven repositories modified; ready for Phase 2 toolchain bump.
+- [x] Ready for Phase 2 toolchain and dependency bump to 26.3 upon user approval.

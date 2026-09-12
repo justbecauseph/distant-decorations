@@ -3,7 +3,9 @@ package me.justbecause.distantdecorations.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import me.justbecause.distantdecorations.DistantDecorations;
+import me.justbecause.distantdecorations.client.DistantDecorationsClient;
 import me.justbecause.distantdecorations.config.DistantDecorationsConfig;
+import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.commands.CommandSource;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
@@ -17,11 +19,19 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 public class CommandAuthorizationRegressionTest {
 
-    private CommandDispatcher<CommandSourceStack> dispatcher;
+    private CommandDispatcher<CommandSourceStack> serverDispatcher;
+    private CommandDispatcher<FabricClientCommandSource> clientDispatcher;
+    private FabricClientCommandSource clientSource;
+    private List<Component> clientFeedbackMessages;
+
     private boolean originalMasterEnabled;
     private boolean originalClientRenderingEnabled;
 
@@ -33,8 +43,24 @@ public class CommandAuthorizationRegressionTest {
 
     @BeforeEach
     public void setUp() {
-        dispatcher = new CommandDispatcher<>();
-        DistantDecorations.registerCommands(dispatcher);
+        serverDispatcher = new CommandDispatcher<>();
+        DistantDecorations.registerCommands(serverDispatcher);
+
+        clientDispatcher = new CommandDispatcher<>();
+        DistantDecorationsClient.registerClientCommands(clientDispatcher);
+
+        clientFeedbackMessages = new ArrayList<>();
+        clientSource = (FabricClientCommandSource) Proxy.newProxyInstance(
+            FabricClientCommandSource.class.getClassLoader(),
+            new Class<?>[]{FabricClientCommandSource.class},
+            (proxy, method, args) -> {
+                if (("sendFeedback".equals(method.getName()) || "sendError".equals(method.getName())) && args != null && args.length > 0) {
+                    clientFeedbackMessages.add((Component) args[0]);
+                }
+                return null;
+            }
+        );
+
         originalMasterEnabled = DistantDecorationsConfig.isMasterEnabled();
         originalClientRenderingEnabled = DistantDecorationsConfig.isClientRenderingEnabled();
     }
@@ -62,53 +88,74 @@ public class CommandAuthorizationRegressionTest {
     @Test
     public void testNonOperatorCannotExecuteServerToggle() {
         CommandSourceStack nonOp = createSource(PermissionSet.NO_PERMISSIONS);
-        assertThrows(CommandSyntaxException.class, () -> dispatcher.execute("dd toggle", nonOp),
+        assertThrows(CommandSyntaxException.class, () -> serverDispatcher.execute("dd toggle", nonOp),
             "Non-operator player must not be permitted to execute /dd toggle");
     }
 
     @Test
-    public void testOperatorCanExecuteServerToggle() throws Exception {
-        PermissionSet opPermissions = new PermissionSet() {
+    public void testModeratorCannotExecuteServerToggle() {
+        // Moderator (level 1) must be rejected because LEVEL_GAMEMASTERS (level 2) is required
+        PermissionSet modPermissions = new PermissionSet() {
             @Override
             public boolean hasPermission(Permission permission) {
-                return permission.equals(Permissions.COMMANDS_GAMEMASTER)
-                    || permission.equals(Permissions.COMMANDS_ADMIN)
-                    || permission.equals(Permissions.COMMANDS_OWNER);
+                return permission.equals(Permissions.COMMANDS_MODERATOR);
             }
         };
-        CommandSourceStack op = createSource(opPermissions);
+        CommandSourceStack mod = createSource(modPermissions);
+        assertThrows(CommandSyntaxException.class, () -> serverDispatcher.execute("dd toggle", mod),
+            "Moderator (level 1) must not be permitted to execute /dd toggle; level 2 (GAMEMASTER) is required");
+    }
+
+    @Test
+    public void testGamemasterCanExecuteServerToggle() throws Exception {
+        // Gamemaster (level 2) must be permitted
+        PermissionSet gmPermissions = new PermissionSet() {
+            @Override
+            public boolean hasPermission(Permission permission) {
+                return permission.equals(Permissions.COMMANDS_GAMEMASTER);
+            }
+        };
+        CommandSourceStack gm = createSource(gmPermissions);
 
         boolean initial = DistantDecorationsConfig.isMasterEnabled();
-        int result = dispatcher.execute("dd toggle", op);
+        int result = serverDispatcher.execute("dd toggle", gm);
         assertEquals(1, result);
         assertEquals(!initial, DistantDecorationsConfig.isMasterEnabled(),
-            "/dd toggle should flip masterEnabled for operator");
+            "/dd toggle should flip masterEnabled for gamemaster");
     }
 
     @Test
     public void testOrdinaryPlayerCanExecuteStatsCommand() throws Exception {
         CommandSourceStack nonOp = createSource(PermissionSet.NO_PERMISSIONS);
-        int result = dispatcher.execute("dd stats", nonOp);
+        int result = serverDispatcher.execute("dd stats", nonOp);
         assertEquals(1, result, "/dd stats should be publicly readable without operator permissions");
     }
 
     @Test
-    public void testClientToggleIsIndependentOfServerMasterSwitch() {
+    public void testClientToggleExecutedViaBrigadierWithServerSwitchInitiallyTrue() throws Exception {
         DistantDecorationsConfig.setMasterEnabled(true);
         DistantDecorationsConfig.setClientRenderingEnabled(true);
 
-        // Toggle client rendering
+        int result = clientDispatcher.execute("ddc toggle", clientSource);
+        assertEquals(1, result);
+        assertFalse(DistantDecorationsConfig.isClientRenderingEnabled(),
+            "Client rendering should be disabled after /ddc toggle");
+        assertTrue(DistantDecorationsConfig.isMasterEnabled(),
+            "Server master switch must remain true when client executes /ddc toggle");
+        assertFalse(clientFeedbackMessages.isEmpty(), "Client feedback should be sent");
+    }
+
+    @Test
+    public void testClientToggleExecutedViaBrigadierWithServerSwitchInitiallyFalse() throws Exception {
+        DistantDecorationsConfig.setMasterEnabled(false);
         DistantDecorationsConfig.setClientRenderingEnabled(false);
 
-        // Verify client toggle did not modify server master switch
-        assertTrue(DistantDecorationsConfig.isMasterEnabled(),
-            "Client rendering toggle must not change server master switch state");
-        assertFalse(DistantDecorationsConfig.isClientRenderingEnabled(),
-            "Client rendering should be disabled");
-
-        // Toggle back
-        DistantDecorationsConfig.setClientRenderingEnabled(true);
-        assertTrue(DistantDecorationsConfig.isMasterEnabled());
-        assertTrue(DistantDecorationsConfig.isClientRenderingEnabled());
+        int result = clientDispatcher.execute("ddc toggle", clientSource);
+        assertEquals(1, result);
+        assertTrue(DistantDecorationsConfig.isClientRenderingEnabled(),
+            "Client rendering should be enabled after /ddc toggle");
+        assertFalse(DistantDecorationsConfig.isMasterEnabled(),
+            "Server master switch must remain false when client executes /ddc toggle");
+        assertFalse(clientFeedbackMessages.isEmpty(), "Client feedback should be sent");
     }
 }

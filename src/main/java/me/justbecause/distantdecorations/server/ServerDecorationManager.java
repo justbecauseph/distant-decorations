@@ -27,6 +27,7 @@ public final class ServerDecorationManager {
     private static final ServerDecorationManager INSTANCE = new ServerDecorationManager();
 
     private final Map<ResourceKey<Level>, ServerDecorationWorldIndex> worldIndices = new ConcurrentHashMap<>();
+    private final Map<ResourceKey<Level>, ServerDecorationWorldIndex> pendingRecoveryIndices = new ConcurrentHashMap<>();
 
     private ServerDecorationManager() {}
 
@@ -61,10 +62,7 @@ public final class ServerDecorationManager {
         });
 
         ServerLevelEvents.UNLOAD.register((server, level) -> {
-            ServerDecorationWorldIndex index = worldIndices.remove(level.dimension());
-            if (index != null) {
-                index.close();
-            }
+            handleLevelUnload(level.dimension());
         });
 
         ServerChunkEvents.CHUNK_LOAD.register((serverLevel, chunk, generated) -> {
@@ -79,11 +77,83 @@ public final class ServerDecorationManager {
         });
 
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
-            for (ServerDecorationWorldIndex index : worldIndices.values()) {
-                index.close();
-            }
-            worldIndices.clear();
+            handleServerStopping();
         });
+    }
+
+    public boolean handleLevelUnload(ResourceKey<Level> dimension) {
+        ServerDecorationWorldIndex index = worldIndices.remove(dimension);
+        if (index == null) {
+            return true;
+        }
+        boolean closed = index.close();
+        if (!closed) {
+            DistantDecorations.LOGGER.error("Failed to close world index cleanly during unload for dimension {}; retaining in recovery queue", dimension.identifier());
+            pendingRecoveryIndices.put(dimension, index);
+            return false;
+        } else {
+            pendingRecoveryIndices.remove(dimension);
+            return true;
+        }
+    }
+
+    public boolean retryPendingRecovery(ResourceKey<Level> dimension) {
+        ServerDecorationWorldIndex index = pendingRecoveryIndices.get(dimension);
+        if (index == null) {
+            return true;
+        }
+        if (index.close()) {
+            DistantDecorations.LOGGER.info("Successfully recovered and persisted world index for dimension {}", dimension.identifier());
+            pendingRecoveryIndices.remove(dimension);
+            return true;
+        }
+        return false;
+    }
+
+    public boolean handleServerStopping() {
+        boolean allClean = true;
+        for (Map.Entry<ResourceKey<Level>, ServerDecorationWorldIndex> entry : worldIndices.entrySet()) {
+            ResourceKey<Level> dim = entry.getKey();
+            ServerDecorationWorldIndex index = entry.getValue();
+            if (!index.close()) {
+                DistantDecorations.LOGGER.error("Failed to persist world index during server shutdown for dimension {}", dim.identifier());
+                pendingRecoveryIndices.put(dim, index);
+                allClean = false;
+            }
+        }
+        worldIndices.clear();
+
+        var it = pendingRecoveryIndices.entrySet().iterator();
+        while (it.hasNext()) {
+            var entry = it.next();
+            if (entry.getValue().close()) {
+                it.remove();
+            } else {
+                allClean = false;
+            }
+        }
+
+        if (!pendingRecoveryIndices.isEmpty()) {
+            DistantDecorations.LOGGER.error("CRITICAL: Server stopping with unpersisted decorations in {} dimension(s): {}",
+                pendingRecoveryIndices.size(), pendingRecoveryIndices.keySet());
+        } else {
+            DistantDecorations.LOGGER.info("All Distant Decorations world indices successfully persisted on shutdown.");
+        }
+
+        return allClean;
+    }
+
+    public Map<ResourceKey<Level>, ServerDecorationWorldIndex> getPendingRecoveryIndices() {
+        return java.util.Collections.unmodifiableMap(pendingRecoveryIndices);
+    }
+
+    public void registerIndexForTesting(ResourceKey<Level> dimension, ServerDecorationWorldIndex index) {
+        worldIndices.put(dimension, index);
+    }
+
+    public void clearForTesting() {
+        worldIndices.clear();
+        pendingRecoveryIndices.clear();
     }
 
     @Nullable

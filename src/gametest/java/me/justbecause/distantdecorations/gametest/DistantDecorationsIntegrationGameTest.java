@@ -71,17 +71,26 @@ public class DistantDecorationsIntegrationGameTest {
             helper.assertTrue(record.id().anchor().equals(absPos), "Decoration anchor mismatch");
             helper.assertTrue(record.id().type().equals(BARREL_TEST_TYPE_ID), "Decoration type mismatch");
 
+            // Assert exact bounds and decoded payload
+            AABB expectedBounds = new AABB(absPos.getX(), absPos.getY(), absPos.getZ(), absPos.getX() + 1, absPos.getY() + 1, absPos.getZ() + 1);
+            helper.assertTrue(expectedBounds.equals(record.bounds()), "Decoration bounds mismatch: expected " + expectedBounds + ", got " + record.bounds());
+            helper.assertTrue(record.payload() != null, "Decoration payload must not be null");
+            String decodedPayload = BARREL_TEST_TYPE.fromBytes(record.payload());
+            helper.assertTrue("barrel-data-payload".equals(decodedPayload), "Decoded payload mismatch: expected 'barrel-data-payload', got: " + decodedPayload);
+
             int rx = ServerDecorationWorldIndex.chunkToRegionCoord(absPos.getX() >> 4);
             int rz = ServerDecorationWorldIndex.chunkToRegionCoord(absPos.getZ() >> 4);
             ServerDecorationRegion region = index.getRegion(rx, rz);
             helper.assertTrue(region != null, "Region was not created for published decoration");
             helper.assertTrue(region.getRecord(record.id()) != null, "Record missing from region");
             long firstRevision = record.revision();
+            long regionRevisionBefore = region.revision();
 
-            // 2. Unchanged capture is a no-op (same record, revision not incremented)
+            // 2. Unchanged capture is a no-op (same record, revision and region revision not incremented)
             DecorationRecord unchanged = index.publish(absPos, barrelBe);
             helper.assertTrue(unchanged == record, "Unchanged publish did not return identical record instance");
-            helper.assertTrue(unchanged.revision() == firstRevision, "Unchanged publish incremented revision");
+            helper.assertTrue(unchanged.revision() == firstRevision, "Unchanged publish incremented record revision");
+            helper.assertTrue(region.revision() == regionRevisionBefore, "Unchanged publish incremented region revision");
 
             // 3. Removal via index removes the decoration and increments revision
             boolean removed = index.remove(absPos);
@@ -156,12 +165,12 @@ public class DistantDecorationsIntegrationGameTest {
     }
 
     @GameTest
-    public void testMultiDimensionWorldIndexInitialization(GameTestHelper helper) {
+    public void testWorldIndexInitialization(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         ServerDecorationWorldIndex index = ServerDecorationManager.getInstance().getIndex(level);
         helper.assertTrue(index != null, "DistantDecorations server index is null");
 
-        // Verify world dimensions indexing works for server level
+        // Verify world index initialization for server level
         helper.assertTrue(level.dimension() != null, "ServerLevel dimension is null");
         helper.succeed();
     }

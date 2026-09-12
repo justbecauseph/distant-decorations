@@ -60,6 +60,13 @@ fabricApi {
     }
 }
 
+configurations {
+    benchmarkRuntime {
+        canBeResolved = true
+        canBeConsumed = false
+    }
+}
+
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
 
@@ -70,16 +77,21 @@ dependencies {
     compileOnly "maven.modrinth:chunky:${project.chunky_version}"
     compileOnly "maven.modrinth:voxy:${project.voxy_version}"
 
-    // Integration benchmark runtime (isolated; opt-in via -PenableBenchmarkMods=true)
+    // Integration benchmark runtime (strictly isolated; never part of publication components)
     if (project.hasProperty("enableBenchmarkMods") && project.property("enableBenchmarkMods").toString().toBoolean()) {
-        runtimeOnly "maven.modrinth:voxy:${project.voxy_version}"
-        runtimeOnly "maven.modrinth:sodium:${project.sodium_version}"
-        runtimeOnly "maven.modrinth:spark:${project.spark_version}"
+        benchmarkRuntime "maven.modrinth:voxy:${project.voxy_version}"
+        benchmarkRuntime "maven.modrinth:sodium:${project.sodium_version}"
+        benchmarkRuntime "maven.modrinth:spark:${project.spark_version}"
     }
 
     // Tests
     testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    testImplementation sourceSets.client.output
+}
+
+tasks.matching { it.name == "runIntegrationClient" }.configureEach {
+    classpath += configurations.benchmarkRuntime
 }
 
 test {
@@ -182,6 +194,18 @@ publishing {
                     connection = "scm:git:https://github.com/justbecauseph/distant-decorations.git"
                     developerConnection = "scm:git:ssh://git@github.com/justbecauseph/distant-decorations.git"
                     url = "https://github.com/justbecauseph/distant-decorations"
+                }
+
+                withXml {
+                    def dependenciesNode = asNode().dependencies[0]
+                    if (dependenciesNode != null) {
+                        dependenciesNode.dependency.each { dep ->
+                            def artifactId = dep.artifactId.text()
+                            if (artifactId in ["voxy", "sodium", "spark"]) {
+                                throw new GradleException("Forbidden benchmark dependency leaked into publication POM: " + artifactId)
+                            }
+                        }
+                    }
                 }
             }
         }
