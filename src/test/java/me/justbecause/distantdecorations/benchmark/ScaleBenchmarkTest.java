@@ -19,8 +19,6 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -41,7 +39,6 @@ public class ScaleBenchmarkTest {
     // =========================================================================
 
     @Test
-    @Tag("performance")
     public void benchmarkClientRenderPipelineAcrossScales() {
         int[] datasetSizes = {1_000, 10_000, 50_000};
         int[] visibleBudgetCap = {100, 500, 2000};
@@ -157,7 +154,6 @@ public class ScaleBenchmarkTest {
     // =========================================================================
 
     @Test
-    @Tag("performance")
     public void benchmarkServerDiskIOAndCacheBehavior() throws Exception {
         System.out.println("\n================================================================================");
         System.out.println("  SERVER DISK I/O LATENCY BENCHMARK (Cold Load vs Warm Residency vs Save)");
@@ -219,7 +215,6 @@ public class ScaleBenchmarkTest {
     // =========================================================================
 
     @Test
-    @Tag("performance")
     public void benchmarkSnapshotMaterializationWorkload() {
         System.out.println("\n================================================================================");
         System.out.println("  SNAPSHOT MATERIALIZATION WORKLOAD BENCHMARK (Filtering, Chunking, Budgeting)");

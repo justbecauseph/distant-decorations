@@ -95,31 +95,7 @@ tasks.matching { it.name == "runIntegrationClient" }.configureEach {
 }
 
 test {
-    useJUnitPlatform {
-        excludeTags 'performance'
-    }
-}
-
-tasks.register('benchmark', Test) {
-    group = 'verification'
-    description = 'Runs timing-sensitive performance benchmarks.'
-
-    dependsOn tasks.named('testClasses')
-
-    testClassesDirs = sourceSets.test.output.classesDirs
-    classpath = sourceSets.test.runtimeClasspath
-
-    useJUnitPlatform {
-        includeTags 'performance'
-    }
-
-    maxParallelForks = 1
-
-    testLogging {
-        events 'passed', 'failed', 'skipped'
-        exceptionFormat = 'full'
-        showStandardStreams = true
-    }
+    useJUnitPlatform()
 }
 
 processResources {

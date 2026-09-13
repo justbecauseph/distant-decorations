@@ -76,12 +76,10 @@ public class CommandAuthorizationRegressionTest {
             CommandSource.NULL,
             Vec3.ZERO,
             Vec2.ZERO,
-            null,
+            null,                           // ServerLevel: unused by this fixture
             permissions,
-            "TestUser",
             Component.literal("TestUser"),
-            null,
-            null
+            null                            // MinecraftServer: unused by this fixture
         );
     }
 
