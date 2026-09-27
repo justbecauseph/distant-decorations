@@ -1,13 +1,13 @@
 # Distant Decorations
 
-[![Minecraft](https://img.shields.io/badge/Minecraft-26.2-brightgreen.svg)](https://minecraft.net/)
-[![Fabric API](https://img.shields.io/badge/Fabric%20API-0.158.0%2B26.2-blue.svg)](https://fabricmc.net/)
+[![Minecraft](https://img.shields.io/badge/Minecraft-26.3-brightgreen.svg)](https://minecraft.net/)
+[![Fabric API](https://img.shields.io/badge/Fabric%20API-0.161.0%2B26.3-blue.svg)](https://fabricmc.net/)
 [![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/)
 [![License](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE.md)
 
-**Distant Decorations** is a high-performance Fabric framework for Minecraft 26.2 that lets participating mods persist and render decorative block-entity visuals far beyond vanilla chunk distances. Its default client subscription range is 512 chunks (8,192 blocks), with a server-authoritative maximum of 1,024 chunks (16,384 blocks). Integrations such as Fast Paintings and Camerapture provide their own lightweight server metadata providers and distant client renderers.
+**Distant Decorations** is a high-performance Fabric framework for Minecraft 26.3 that lets participating mods persist and render decorative block-entity visuals far beyond vanilla chunk distances. Its default client subscription range is 512 chunks (8,192 blocks), with a server-authoritative maximum of 1,024 chunks (16,384 blocks). Integrations such as Fast Paintings and Camerapture provide their own lightweight server metadata providers and distant client renderers.
 
-By decoupling visual representation from ticking block entities and leveraging hierarchical spatial indexing, projected-size culling, and bounded top-K selection, Distant Decorations keeps distant-decoration traversal in the low-millisecond range even with large synchronized datasets—seamlessly coexisting with long-distance terrain renderers like **Voxy**.
+By decoupling visual representation from ticking block entities and using hierarchical spatial indexing, projected-size culling, and bounded top-K selection, Distant Decorations keeps distant-decoration traversal in the low-millisecond range even with large synchronized datasets.
 
 ---
 
@@ -40,7 +40,7 @@ Distant Decorations is designed as a modular core framework. Content mods regist
 | :--- | :--- |
 | **[Fast Paintings](https://github.com/justbecauseph/fast-paintings)** | Registers a painting provider and renderer leveraging vanilla atlas sprites with single-quad `FAR` LOD and far-LOD visual footprint scaling. |
 | **[Camerapture](https://github.com/justbecauseph/camerapture)** | Registers a picture frame provider and renderer that strictly requests $32\times32$ thumbnails from `ClientPictureStore` with far-LOD visual scaling. |
-| **[Voxy](https://modrinth.com/mod/voxy)** | Full depth-tested compatibility via `LevelRenderEvents.COLLECT_SUBMITS` and non-interfering storage backends. |
+| **[Voxy](https://modrinth.com/mod/voxy)** | Uses `LevelRenderEvents.COLLECT_SUBMITS` and separate storage; integration on 26.3 awaits a compatible Voxy release and client testing. |
 
 ---
 
@@ -183,10 +183,16 @@ cd distant-decorations
 ./gradlew build
 ```
 
-To run the full client test environment with Voxy, Sodium, and Spark preloaded:
+To run the server GameTests with the optional 26.3 Chunky integration loaded:
 
 ```bash
-./gradlew runIntegrationClient
+./gradlew runGameTest -PenableChunkyGameTest=true
+```
+
+To run the client benchmark environment with Sodium and Spark preloaded:
+
+```bash
+./gradlew runIntegrationClient -PenableBenchmarkMods=true
 ```
 
 The compiled mod JAR will be located in `build/libs/`.

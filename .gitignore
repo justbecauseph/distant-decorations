@@ -14,5 +14,6 @@ libs/
 .settings/
 .DS_Store
 run-integration
+run-integration-26.3/
 PLAN.md
 PROGRESS.md

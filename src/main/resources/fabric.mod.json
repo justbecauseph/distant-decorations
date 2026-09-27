@@ -22,10 +22,10 @@
     "distantdecorations.mixins.json"
   ],
   "depends": {
-    "fabricloader": ">=0.19.3",
-    "minecraft": "26.3-rc.2",
+    "fabricloader": ">=0.19.5",
+    "minecraft": "26.3",
     "java": ">=25",
-    "fabric-api": "*"
+    "fabric-api": ">=0.161.0"
   },
   "suggests": {
     "voxy": "*",

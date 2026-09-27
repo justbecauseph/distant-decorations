@@ -33,7 +33,7 @@ loom {
         integrationClient {
             client()
             name "Integration Client Benchmark"
-            runDir "run-integration"
+            runDir "run-integration-26.3"
 
             vmArgs(
                 "-XX:+UnlockDiagnosticVMOptions",
@@ -75,11 +75,13 @@ dependencies {
 
     // Optional integrations
     compileOnly "maven.modrinth:chunky:${project.chunky_version}"
-    compileOnly "maven.modrinth:voxy:${project.voxy_version}"
+
+    if (project.hasProperty("enableChunkyGameTest") && project.property("enableChunkyGameTest").toString().toBoolean()) {
+        gametestRuntimeOnly "maven.modrinth:chunky:${project.chunky_version}"
+    }
 
     // Integration benchmark runtime (strictly isolated; never part of publication components)
     if (project.hasProperty("enableBenchmarkMods") && project.property("enableBenchmarkMods").toString().toBoolean()) {
-        benchmarkRuntime "maven.modrinth:voxy:${project.voxy_version}"
         benchmarkRuntime "maven.modrinth:sodium:${project.sodium_version}"
         benchmarkRuntime "maven.modrinth:spark:${project.spark_version}"
     }
